@@ -1,0 +1,32 @@
+/* Variant buttons container */
+.variant-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 8px 0;
+  align-items: center;
+  padding: 4px 0;
+}
+
+/* Button base */
+.variant-btn {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(0,0,0,0.08);
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  color: #223;
+  transition: background .12s, box-shadow .12s, color .12s;
+}
+
+/* Active state */
+.variant-btn.active {
+  background: #0b84ff;
+  color: #fff;
+  border-color: rgba(11,132,255,0.9);
+  box-shadow: 0 2px 6px rgba(11,132,255,0.12);
+}
+
+/* Small modifier (optional) */
+.variant-btn.small { padding:4px 8px; font-size:12px; }
