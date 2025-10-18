@@ -19,49 +19,101 @@ jobs:
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Download artifacts from upstream repo (verbose, safe names)
+      - name: Download artifacts from upstream repo (results and graphs)
         env:
           REPO_OWNER: InferenceMAX
           REPO_NAME: InferenceMAX
-          ARTIFACT_NAME: ""            # set exact artifact name to download only that one
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACT_NAME: ""            # leave empty to consider all, or set to exact name
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # or ${{ secrets.UPSTREAM_PAT }} if upstream is private
           ARTIFACTS_DIR: data_zips
           MAX_RUNS: 100
         run: |
           set -euo pipefail
           mkdir -p "$ARTIFACTS_DIR"
+          tmp_runs=/tmp/runs.json
           runs_url="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/actions/runs?per_page=${MAX_RUNS}"
-          curl -s -H "Authorization: token $GITHUB_TOKEN" "$runs_url" > /tmp/runs.json
-          if ! jq -e '.workflow_runs | length > 0' /tmp/runs.json >/dev/null 2>&1; then
+          echo "Fetching runs from $runs_url"
+          curl -sS -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "$runs_url" -o "$tmp_runs"
+          if ! jq -e '.workflow_runs | length > 0' "$tmp_runs" >/dev/null 2>&1; then
             echo "No workflow runs found in upstream repo."
             exit 0
           fi
-          downloaded=0
-          jq -c '.workflow_runs[]' /tmp/runs.json | while read -r run; do
+
+          manifest="$ARTIFACTS_DIR/manifest.csv"
+          echo "run_id,run_created_at,conclusion,artifact_id,artifact_name,size,http_code,unzip_ok,extracted_paths" > "$manifest"
+
+          jq -c '.workflow_runs[]' "$tmp_runs" | while read -r run; do
             run_id=$(echo "$run" | jq -r '.id')
+            run_created_at=$(echo "$run" | jq -r '.created_at')
+            run_conclusion=$(echo "$run" | jq -r '.conclusion')
+            # consider only successful/completed runs
+            if [ "$run_conclusion" != "success" ] && [ "$run_conclusion" != "completed" ]; then
+              continue
+            fi
+
             artifacts_url="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/actions/runs/${run_id}/artifacts"
-            curl -s -H "Authorization: token $GITHUB_TOKEN" "$artifacts_url" > /tmp/artifacts.json
+            curl -sS -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "$artifacts_url" -o /tmp/artifacts.json
             count=$(jq '.artifacts | length' /tmp/artifacts.json)
             if [ "$count" -eq 0 ]; then
               continue
             fi
+
             jq -c '.artifacts[]' /tmp/artifacts.json | while read -r art; do
+              art_id=$(echo "$art" | jq -r '.id')
               art_name=$(echo "$art" | jq -r '.name')
               archive_download_url=$(echo "$art" | jq -r '.archive_download_url')
-              safe_name=$(echo "${run_id}-${art_name}" | tr ' /' '__')
-              out="${ARTIFACTS_DIR}/${safe_name}.zip"
+
+              # Only consider aggregated artifacts created by their collect template:
+              # names that begin with results_ or graphs_
+              if ! echo "$art_name" | grep -Eqi '^(results_|graphs_)'; then
+                continue
+              fi
+
+              # if ARTIFACT_NAME set, only download that
               if [ -n "$ARTIFACT_NAME" ] && [ "$ARTIFACT_NAME" != "" ] && [ "$art_name" != "$ARTIFACT_NAME" ]; then
                 continue
               fi
-              curl -sSL -H "Authorization: token $GITHUB_TOKEN" -o "$out" "$archive_download_url" || continue
-              downloaded=$((downloaded+1))
+
+              safe_name=$(echo "${run_id}-${art_id}-${art_name}" | tr ' /' '__')
+              out="${ARTIFACTS_DIR}/${safe_name}.zip"
+
+              http_code=$(curl -sSL -w "%{http_code}" -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -o "$out" "$archive_download_url" || echo "000")
+              size=0
+              if [ -f "$out" ]; then size=$(stat -c%s "$out" || echo 0); fi
+              unzip_ok="false"
+              extracted_paths=""
+
+              if [ "$http_code" = "200" ] && [ "$size" -gt 0 ]; then
+                if unzip -t "$out" >/dev/null 2>&1; then
+                  unzip_ok="true"
+                  # extract only into a temporary directory to inspect/copy needed files
+                  tmp_extract_dir=$(mktemp -d)
+                  unzip -q "$out" -d "$tmp_extract_dir"
+                  # collect paths of agg_*.json and png files and copy them to docs/data
+                  mkdir -p docs/data
+                  found_paths=""
+                  # agg jsons
+                  for f in $(find "$tmp_extract_dir" -type f -name "agg_*.json" -o -name "*.json" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg"); do
+                    # prefer aggregated filename pattern agg_<exp>.json; copy all JSON/graphs
+                    dest_name=$(basename "$f")
+                    safe_dest=$(echo "$dest_name" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
+                    cp -f "$f" "docs/data/$safe_dest"
+                    found_paths="${found_paths}${safe_dest};"
+                  done
+                  extracted_paths="$found_paths"
+                  rm -rf "$tmp_extract_dir"
+                fi
+              fi
+
+              echo "${run_id},${run_created_at},${run_conclusion},${art_id},${art_name},${size},${http_code},${unzip_ok},\"${extracted_paths}\"" >> "$manifest"
             done
-            if [ -n "$ARTIFACT_NAME" ] && [ "$ARTIFACT_NAME" != "" ] && [ "$downloaded" -gt 0 ]; then
-              break
-            fi
           done
-          echo "Downloaded: $downloaded"
+
+          echo "Downloaded and extracted aggregated artifacts. Manifest:"
           ls -la "$ARTIFACTS_DIR" || true
+          ls -la docs/data || true
+          echo "Manifest head:"
+          head -n 20 "$manifest" || true
 
       - name: Set up Python
         uses: actions/setup-python@v4
