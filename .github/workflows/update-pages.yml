@@ -73,13 +73,18 @@ jobs:
 
       - name: Generate HTML
         run: |
-          mkdir -p extracted
-          if ls data_zips/*.zip >/dev/null 2>&1; then
-            for z in data_zips/*.zip; do
-              unzip -o "$z" -d extracted/ || true
-            done
-          fi
-          python generate_html.py
+          set -euo pipefail
+          echo "PWD: $(pwd)"
+          echo "List data_zips:"
+          ls -la data_zips || true
+          # ensure output dirs exist
+          mkdir -p docs data_zips
+          # run generator (non-buffered)
+          python3 -u generate_html.py
+          echo "After generate, files in docs:"
+          find docs -maxdepth 2 -type f -print || true
+          echo "Files in docs/data (if any):"
+          ls -la docs/data || true
 
       - name: Commit and push generated site
         run: |
