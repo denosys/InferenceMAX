@@ -19,7 +19,7 @@ jobs:
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Download artifacts from upstream repo (results and graphs)
+      - name: Download artifacts from upstream repo (results and graphs, exclude tests)
         env:
           REPO_OWNER: InferenceMAX
           REPO_NAME: InferenceMAX
@@ -27,6 +27,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # or ${{ secrets.UPSTREAM_PAT }} if upstream is private
           ARTIFACTS_DIR: data_zips
           MAX_RUNS: 100
+          EXCLUDE_PATTERNS: "test tmp debug"
         run: |
           set -euo pipefail
           mkdir -p "$ARTIFACTS_DIR"
@@ -69,6 +70,16 @@ jobs:
                 continue
               fi
 
+              # Exclude artifacts matching EXCLUDE_PATTERNS (case-insensitive)
+              skip=0
+              for ex in $EXCLUDE_PATTERNS; do
+                if echo "$art_name" | grep -qi "$ex"; then skip=1; break; fi
+              done
+              if [ "$skip" -eq 1 ]; then
+                echo "Skipping excluded artifact: $art_name"
+                continue
+              fi
+
               # if ARTIFACT_NAME set, only download that
               if [ -n "$ARTIFACT_NAME" ] && [ "$ARTIFACT_NAME" != "" ] && [ "$art_name" != "$ARTIFACT_NAME" ]; then
                 continue
@@ -86,15 +97,11 @@ jobs:
               if [ "$http_code" = "200" ] && [ "$size" -gt 0 ]; then
                 if unzip -t "$out" >/dev/null 2>&1; then
                   unzip_ok="true"
-                  # extract only into a temporary directory to inspect/copy needed files
                   tmp_extract_dir=$(mktemp -d)
                   unzip -q "$out" -d "$tmp_extract_dir"
-                  # collect paths of agg_*.json and png files and copy them to docs/data
                   mkdir -p docs/data
                   found_paths=""
-                  # agg jsons
                   for f in $(find "$tmp_extract_dir" -type f -name "agg_*.json" -o -name "*.json" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg"); do
-                    # prefer aggregated filename pattern agg_<exp>.json; copy all JSON/graphs
                     dest_name=$(basename "$f")
                     safe_dest=$(echo "$dest_name" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
                     cp -f "$f" "docs/data/$safe_dest"
