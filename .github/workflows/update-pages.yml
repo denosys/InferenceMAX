@@ -90,8 +90,8 @@ jobs:
           git add docs || true
           git status --porcelain
           if git diff --staged --quiet; then
-          echo "No changes to commit"
+            echo "No changes to commit"
           else
-          git commit -m "nightly: update pages and data"
+            git commit -m "nightly: update pages and data"
           fi
-          git push origin HEAD  
+          git push origin HEAD
