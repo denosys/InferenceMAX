@@ -1,0 +1,30 @@
+{
+  "h100": {
+    "n_success": 0,
+    "total": 0
+  },
+  "h200": {
+    "n_success": 18,
+    "total": 243
+  },
+  "gb200": {
+    "n_success": 0,
+    "total": 0
+  },
+  "mi300x": {
+    "n_success": 0,
+    "total": 0
+  },
+  "mi325x": {
+    "n_success": 16,
+    "total": 106
+  },
+  "mi355x": {
+    "n_success": 0,
+    "total": 0
+  },
+  "b200": {
+    "n_success": 0,
+    "total": 0
+  }
+}
