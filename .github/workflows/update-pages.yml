@@ -1,0 +1,90 @@
+name: nightly-update-pages
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Download artifacts from upstream repo (verbose, safe names)
+        env:
+          REPO_OWNER: InferenceMAX
+          REPO_NAME: InferenceMAX
+          ARTIFACT_NAME: ""            # set exact artifact name to download only that one
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACTS_DIR: data_zips
+          MAX_RUNS: 10
+        run: |
+          set -euo pipefail
+          mkdir -p "$ARTIFACTS_DIR"
+          runs_url="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/actions/runs?per_page=${MAX_RUNS}"
+          curl -s -H "Authorization: token $GITHUB_TOKEN" "$runs_url" > /tmp/runs.json
+          if ! jq -e '.workflow_runs | length > 0' /tmp/runs.json >/dev/null 2>&1; then
+            echo "No workflow runs found in upstream repo."
+            exit 0
+          fi
+          downloaded=0
+          jq -c '.workflow_runs[]' /tmp/runs.json | while read -r run; do
+            run_id=$(echo "$run" | jq -r '.id')
+            artifacts_url="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/actions/runs/${run_id}/artifacts"
+            curl -s -H "Authorization: token $GITHUB_TOKEN" "$artifacts_url" > /tmp/artifacts.json
+            count=$(jq '.artifacts | length' /tmp/artifacts.json)
+            if [ "$count" -eq 0 ]; then
+              continue
+            fi
+            jq -c '.artifacts[]' /tmp/artifacts.json | while read -r art; do
+              art_name=$(echo "$art" | jq -r '.name')
+              archive_download_url=$(echo "$art" | jq -r '.archive_download_url')
+              safe_name=$(echo "${run_id}-${art_name}" | tr ' /' '__')
+              out="${ARTIFACTS_DIR}/${safe_name}.zip"
+              if [ -n "$ARTIFACT_NAME" ] && [ "$ARTIFACT_NAME" != "" ] && [ "$art_name" != "$ARTIFACT_NAME" ]; then
+                continue
+              fi
+              curl -sSL -H "Authorization: token $GITHUB_TOKEN" -o "$out" "$archive_download_url" || continue
+              downloaded=$((downloaded+1))
+            done
+            if [ -n "$ARTIFACT_NAME" ] && [ "$ARTIFACT_NAME" != "" ] && [ "$downloaded" -gt 0 ]; then
+              break
+            fi
+          done
+          echo "Downloaded: $downloaded"
+          ls -la "$ARTIFACTS_DIR" || true
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install --upgrade pip && pip install pandas plotly
+
+      - name: Generate HTML
+        run: |
+          mkdir -p extracted
+          if ls data_zips/*.zip >/dev/null 2>&1; then
+            for z in data_zips/*.zip; do
+              unzip -o "$z" -d extracted/ || true
+            done
+          fi
+          python generate_html.py
+
+      - name: Commit and push generated site
+        run: |
+          git config --local user.email "actions@github.com"
+          git config --local user.name "GitHub Actions"
+          git add docs || true
+          git commit -m "nightly: update pages" || echo "No changes to commit"
+          git push origin HEAD:gh-pages || echo "Push failed"
