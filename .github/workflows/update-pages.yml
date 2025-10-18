@@ -83,9 +83,15 @@ jobs:
 
       - name: Commit and push generated site
         run: |
+          set -euo pipefail
           git config --local user.email "actions@github.com"
           git config --local user.name "GitHub Actions"
+          git remote set-url origin https://x-access-token:${{ secrets.SECRET_PAT }}@github.com/${{ github.repository }}.git
           git add docs || true
-          git commit -m "nightly: update pages" || echo "No changes to commit"
-          # Push to current branch (main) so Pages can serve from main:/docs
-          git push origin HEAD || echo "Push to main failed"
+          git status --porcelain
+          if git diff --staged --quiet; then
+          echo "No changes to commit"
+          else
+          git commit -m "nightly: update pages and data"
+          fi
+          git push origin HEAD  
