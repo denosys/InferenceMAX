@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # generate_html.py
+# English comments: this script extracts JSON files from zip artifacts in data_zips/,
+# writes each JSON to InferenceMAX/docs/data/<zipname>__<filepath>.json,
+# writes a data_index.json listing saved files, creates diagnostics.txt and docs/index.html.
 # Requirements: pandas, plotly
-# Usage: put .zip files into data_zips/, this script generates docs/index.html
 
 import os
 import json
@@ -10,18 +12,23 @@ import glob
 from typing import List, Dict, Any, Optional
 import pandas as pd
 import plotly.graph_objects as go
+from pathlib import Path
 
 # Configuration (change if needed)
 INPUT_DIR = "data_zips"    # folder where the Action saves zip artifacts
 OUT_DIR = "docs"           # folder served by GitHub Pages
+DATA_DIR = os.path.join(OUT_DIR, "data")
 OUT_FILE = os.path.join(OUT_DIR, "index.html")
+DATA_INDEX = os.path.join(DATA_DIR, "data_index.json")
 
+# Ensure directories exist
 os.makedirs(OUT_DIR, exist_ok=True)
 os.makedirs(INPUT_DIR, exist_ok=True)
+os.makedirs(DATA_DIR, exist_ok=True)
 
 
 def extract_jsons_from_zip(path: str) -> List[Dict[str, Any]]:
-    """Extract all JSON files from a zip and return them as Python objects."""
+    """Extract all JSON files from a zip and return list of tuples (member_name, obj)."""
     results: List[Dict[str, Any]] = []
     try:
         with zipfile.ZipFile(path, "r") as z:
@@ -30,7 +37,7 @@ def extract_jsons_from_zip(path: str) -> List[Dict[str, Any]]:
                     try:
                         raw = z.read(name)
                         j = json.loads(raw.decode("utf-8"))
-                        results.append(j)
+                        results.append({"member": name, "obj": j})
                     except Exception as e:
                         print(f"Warning: could not read {name} in {path}: {e}")
     except zipfile.BadZipFile:
@@ -54,17 +61,51 @@ def normalize_records_from_json(j: Any) -> List[Dict[str, Any]]:
     return []
 
 
-def load_all_records(input_dir: str) -> List[Dict[str, Any]]:
-    """Load and aggregate records from all JSONs contained in zip files."""
+def safe_filename(s: str) -> str:
+    """Make a filesystem-safe filename segment."""
+    # replace path separators and spaces
+    return "".join(c if c.isalnum() or c in "-_." else "_" for c in s)
+
+
+def save_extracted_jsons(zip_path: str) -> List[str]:
+    """Extract JSONs from zip and save each as a file in DATA_DIR. Return list of saved filenames (relative to DATA_DIR)."""
+    saved = []
+    zname = Path(zip_path).stem
+    extracted = extract_jsons_from_zip(zip_path)
+    for item in extracted:
+        member = item["member"]
+        obj = item["obj"]
+        # Build unique filename: <zipname>__<memberpath>.json
+        member_safe = safe_filename(member)
+        fname = f"{safe_filename(zname)}__{member_safe}"
+        if not fname.lower().endswith(".json"):
+            fname = fname + ".json"
+        out_path = Path(DATA_DIR) / fname
+        # write atomically
+        tmp = out_path.with_suffix(out_path.suffix + ".tmp")
+        try:
+            with tmp.open("w", encoding="utf-8") as f:
+                json.dump(obj, f, ensure_ascii=False, indent=2)
+            tmp.replace(out_path)
+            saved.append(fname)
+            print(f"Wrote extracted JSON: {out_path}")
+        except Exception as e:
+            print(f"Warning: cannot write {out_path}: {e}")
+    return saved
+
+
+def load_all_records_from_saved_jsons(saved_files: List[str]) -> List[Dict[str, Any]]:
+    """Read saved JSON files and aggregate records for dataframe creation."""
     all_records: List[Dict[str, Any]] = []
-    zip_paths = sorted(glob.glob(os.path.join(input_dir, "*.zip")))
-    print(f"DEBUG: zip files found in {input_dir}: {zip_paths}")
-    for zpath in zip_paths:
-        json_objs = extract_jsons_from_zip(zpath)
-        print(f"DEBUG: extracted {len(json_objs)} json objects from {zpath}")
-        for j in json_objs:
+    for fname in saved_files:
+        path = Path(DATA_DIR) / fname
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                j = json.load(f)
             recs = normalize_records_from_json(j)
             all_records.extend(recs)
+        except Exception as e:
+            print(f"Warning: cannot read saved json {path}: {e}")
     return all_records
 
 
@@ -103,7 +144,6 @@ def _build_sample_plot_html(df: pd.DataFrame, metric: str) -> str:
 def build_plotly_html(df: pd.DataFrame) -> str:
     """Build an interactive Plotly HTML page from the DataFrame."""
     if df.empty:
-        # Return informative HTML with instructions and a small sample chart
         sample = [
             {"hardware": "cpu-a", "value": 12.3, "run_id": 1},
             {"hardware": "cpu-a", "value": 13.1, "run_id": 2},
@@ -196,17 +236,40 @@ def build_plotly_html(df: pd.DataFrame) -> str:
 
 
 def main():
-    records = load_all_records(INPUT_DIR)
+    # Find all zip files
+    zip_paths = sorted(glob.glob(os.path.join(INPUT_DIR, "*.zip")))
+    print(f"DEBUG: zip files found in {INPUT_DIR}: {zip_paths}")
+
+    # Extract and save JSONs from zips
+    saved_files_all: List[str] = []
+    for zpath in zip_paths:
+        saved = save_extracted_jsons(zpath)
+        saved_files_all.extend(saved)
+    saved_files_all = sorted(set(saved_files_all))  # unique & sorted
+
+    print(f"DEBUG: saved json files: {saved_files_all}")
+
+    # If we saved anything, write data_index.json for client-side discovery
+    try:
+        with open(DATA_INDEX, "w", encoding="utf-8") as idxf:
+            json.dump({"files": saved_files_all}, idxf, ensure_ascii=False, indent=2)
+        print(f"Wrote data index: {DATA_INDEX}")
+    except Exception as e:
+        print(f"Warning: could not write data index: {e}")
+
+    # Aggregate records from saved jsons (so the html generator uses the same data)
+    records = load_all_records_from_saved_jsons(saved_files_all)
     df = to_dataframe(records)
     rows = len(df)
     print(f"DEBUG: Records loaded: {len(records)}. DataFrame rows: {rows}.")
 
-    # Write a minimal diagnostics file alongside index.html for quick inspection
+    # Write diagnostics
     diag_path = os.path.join(OUT_DIR, "diagnostics.txt")
     try:
         with open(diag_path, "w", encoding="utf-8") as d:
-            zips = sorted(glob.glob(os.path.join(INPUT_DIR, "*.zip")))
+            zips = sorted(zip_paths)
             d.write(f"zip_files_found: {zips}\n")
+            d.write(f"saved_files: {saved_files_all}\n")
             d.write(f"records_count: {len(records)}\n")
             d.write("sample_record:\n")
             if records:
@@ -217,6 +280,7 @@ def main():
     except Exception as e:
         print(f"Warning: could not write diagnostics: {e}")
 
+    # Build and write HTML
     html = build_plotly_html(df)
     try:
         with open(OUT_FILE, "w", encoding="utf-8") as f:
