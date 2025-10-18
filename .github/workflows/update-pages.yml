@@ -87,4 +87,5 @@ jobs:
           git config --local user.name "GitHub Actions"
           git add docs || true
           git commit -m "nightly: update pages" || echo "No changes to commit"
-          git push origin HEAD:gh-pages || echo "Push failed"
+          # Push to current branch (main) so Pages can serve from main:/docs
+          git push origin HEAD || echo "Push to main failed"
