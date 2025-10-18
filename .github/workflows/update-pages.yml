@@ -26,7 +26,7 @@ jobs:
           ARTIFACT_NAME: ""            # set exact artifact name to download only that one
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARTIFACTS_DIR: data_zips
-          MAX_RUNS: 10
+          MAX_RUNS: 100
         run: |
           set -euo pipefail
           mkdir -p "$ARTIFACTS_DIR"
