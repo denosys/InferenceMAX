@@ -105,20 +105,51 @@ jobs:
             return 1
           }
           AUTH_HDR="Authorization: token ${secret_pat}"
+          
+          fetch_all_artifacts_for_run() {
+            local owner="$1" repo="$2" run_id="$3" out_json="$4"
+            : > "$out_json"
+            local page=1
+            while :; do
+              api_url="https://api.github.com/repos/${owner}/${repo}/actions/runs/${run_id}/artifacts?per_page=100&page=${page}"
+              tmp="$(mktemp)"
+              # save response body and HTTP headers (to inspect Link if needed)
+              http_code=$(curl -sS -w "%{http_code}" -H "Accept: application/vnd.github+json" -H "$AUTH_HDR" "$api_url" -o "$tmp") || http_code="000"
+              if [ "$http_code" != "200" ]; then
+                echo "  Warning: API request failed for page ${page} (http ${http_code})"
+                rm -f "$tmp"
+                break
+              fi
+              # append artifacts array items to out_json as newline-delimited JSON objects
+              jq -c '.artifacts[]' "$tmp" >> "$out_json"
+              # inspect Link header to see if there is a next page
+              link_hdr=$(curl -sI -H "Accept: application/vnd.github+json" -H "$AUTH_HDR" "$api_url" | tr -d '\r' | sed -n 's/^Link: //Ip' || true)
+              rm -f "$tmp"
+              # if link_hdr contains rel="next" continue, else break
+              if echo "$link_hdr" | grep -q 'rel="next"'; then
+                page=$((page+1))
+                continue
+              else
+                break
+              fi
+            done
+          }
+          
           while IFS= read -r run_url || [ -n "$run_url" ]; do
             [ -z "$run_url" ] && continue
             owner=$(echo "$run_url" | awk -F'/' '{print $4}')
             repo=$(echo "$run_url" | awk -F'/' '{print $5}')
             run_id=$(echo "$run_url" | awk -F'/' '{print $NF}')
             echo "Processing run $run_id from $owner/$repo"
-            api_url="https://api.github.com/repos/${owner}/${repo}/actions/runs/${run_id}/artifacts?per_page=200"
-            tmp_art="/tmp/im_runs/artifacts_${run_id}.json"
-            curl -sS -H "Accept: application/vnd.github+json" -H "$AUTH_HDR" "$api_url" -o "$tmp_art" || { echo "Failed to query artifacts for run $run_id"; continue; }
-            if ! jq -e '.artifacts | length > 0' "$tmp_art" >/dev/null 2>&1; then
+            tmp_art="/tmp/im_runs/artifacts_${run_id}.ndjson"
+            rm -f "$tmp_art"
+            fetch_all_artifacts_for_run "$owner" "$repo" "$run_id" "$tmp_art"
+            if [ ! -s "$tmp_art" ]; then
               echo " No artifacts for run $run_id"
               continue
             fi
-            jq -c '.artifacts[]' "$tmp_art" | while read -r art; do
+            # iterate items (each line is a JSON artifact)
+            while IFS= read -r art; do
               art_id=$(echo "$art" | jq -r '.id')
               art_name=$(echo "$art" | jq -r '.name')
               norm_name="$art_name"
@@ -150,7 +181,7 @@ jobs:
               else
                 echo "  Warning: artifact $out not a valid zip or empty"
               fi
-            done
+            done < "$tmp_art"
           done < "$runs_file"
           echo "Download step complete. Files in ${docs_data}:"
           ls -la "${docs_data}" || true
