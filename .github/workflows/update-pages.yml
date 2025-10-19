@@ -129,6 +129,7 @@ jobs:
             done
           }
 
+          # iterate runs and download/extract allowed artifacts
           while IFS= read -r run_url || [ -n "$run_url" ]; do
             [ -z "$run_url" ] && continue
             owner=$(echo "$run_url" | awk -F'/' '{print $4}')
@@ -172,85 +173,80 @@ jobs:
                       echo "   -> extracted ${dest}"
                   done
                 rm -rf "$tmpd"
-
-                # --- post-process: keep one best prefixed file per subtype, move other prefixed files to older, delete non-prefixed ---
-                docs_data="${docs_data%/}"
-                older_dir="${docs_data}/older"
-                mkdir -p "$older_dir"
-
-                # helper: parse prefixed filenames "run-artid-name..."
-                parse_prefixed() {
-                  local bn="$1"
-                  if [[ "$bn" =~ ^([0-9]+)-([0-9]+)-(.+)$ ]]; then
-                    printf '%s\t%s\t%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
-                    return 0
-                  fi
-                  return 1
-                }
-
-                declare -A best_for_subtype
-                declare -A best_run
-                declare -A best_artid
-                non_prefixed_files=()
-
-                # 1) choose best per subtype
-                for ff in "$docs_data"/*; do
-                  [ -f "$ff" ] || continue
-                  bn=$(basename "$ff")
-                  if parsed=$(parse_prefixed "$bn" 2>/dev/null); then
-                    IFS=$'\t' read -r run artid namepart <<< "$parsed"
-                    subtype=$(printf '%s' "$namepart" | sed -E 's/__agg_.*$//' | sed -E 's/\.[^.]+$//')
-                    run=${run:-0}; artid=${artid:-0}
-                    prev_run=${best_run[$subtype]:--1}
-                    prev_art=${best_artid[$subtype]:-0}
-                    if (( run > prev_run )) || { (( run == prev_run )) && (( artid > prev_art )); }; then
-                      best_run[$subtype]="$run"
-                      best_artid[$subtype]="$artid"
-                      best_for_subtype[$subtype]="$ff"
-                    fi
-                  else
-                    non_prefixed_files+=("$ff")
-                  fi
-                done
-
-                # 2) move prefixed files that are not the chosen best to older
-                for ff in "$docs_data"/*; do
-                  [ -f "$ff" ] || continue
-                  bn=$(basename "$ff")
-                  if parse_prefixed "$bn" >/dev/null 2>&1; then
-                    keep_this=0
-                    for s in "${!best_for_subtype[@]}"; do
-                      [ "${best_for_subtype[$s]}" = "$ff" ] && keep_this=1 && break
-                    done
-                    if [ "$keep_this" -eq 1 ]; then
-                      echo "Keeping prefixed file: ${bn}"
-                    else
-                      echo "Moving older prefixed file: ${bn} -> ${older_dir}/"
-                      mv -f "$ff" "${older_dir}/" || echo " Failed to move $ff"
-                    fi
-                  fi
-                done
-
-                # 3) delete all non-prefixed files (assumed spurious)
-                for ff in "${non_prefixed_files[@]:-}"; do
-                  [ -f "$ff" ] || continue
-                  bn=$(basename "$ff")
-                  echo "Deleting non-prefixed file: ${bn}"
-                  rm -f "$ff" || echo " Failed to delete $ff"
-                done
-
-                echo "Post-process complete. Kept files:"
-                for s in "${!best_for_subtype[@]}"; do
-                  echo "  - $(basename "${best_for_subtype[$s]}")"
-                done
-
               else
                 echo "  Warning: artifact $out not a valid zip or empty"
               fi
             done < "$tmp_art"
           done < "$runs_file"
-          echo "Download step complete. Files in ${docs_data}:"
-          ls -la "${docs_data}" || true
+
+          # --- global post-process (run once after all runs processed) ---
+          docs_data="${docs_data%/}"
+          older_dir="${docs_data}/older"
+          mkdir -p "$older_dir"
+
+          parse_prefixed() {
+            local bn="$1"
+            if [[ "$bn" =~ ^([0-9]+)-([0-9]+)-(.+)$ ]]; then
+              printf '%s\t%s\t%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+              return 0
+            fi
+            return 1
+          }
+
+          declare -A best_for_subtype
+          declare -A best_run
+          declare -A best_artid
+          non_prefixed_files=()
+
+          # build a stable list of files
+          mapfile -t allfiles < <(find "$docs_data" -maxdepth 1 -type f -printf '%P\n' | sort)
+
+          for bn in "${allfiles[@]}"; do
+            f="${docs_data}/${bn}"
+            if parsed=$(parse_prefixed "$bn" 2>/dev/null); then
+              IFS=$'\t' read -r run artid namepart <<< "$parsed"
+              subtype=$(printf '%s' "$namepart" | sed -E 's/__agg_.*$//' | sed -E 's/\.[^.]+$//')
+              run=${run:-0}; artid=${artid:-0}
+              prev_run=${best_run[$subtype]:--1}
+              prev_art=${best_artid[$subtype]:-0}
+              if (( run > prev_run )) || { (( run == prev_run )) && (( artid > prev_art )); }; then
+                best_run[$subtype]="$run"
+                best_artid[$subtype]="$artid"
+                best_for_subtype[$subtype]="$f"
+              fi
+            else
+              non_prefixed_files+=("$f")
+            fi
+          done
+
+          # move prefixed files not selected
+          for bn in "${allfiles[@]}"; do
+            f="${docs_data}/${bn}"
+            if parse_prefixed "$bn" >/dev/null 2>&1; then
+              keep_this=0
+              for s in "${!best_for_subtype[@]}"; do
+                [ "${best_for_subtype[$s]}" = "$f" ] && keep_this=1 && break
+              done
+              if [ "$keep_this" -eq 1 ]; then
+                echo "Keeping prefixed file: ${bn}"
+              else
+                echo "Moving older prefixed file: ${bn} -> ${older_dir}/"
+                mv -f "$f" "${older_dir}/" || echo " Failed to move $f"
+              fi
+            fi
+          done
+
+          # delete non-prefixed files
+          for f in "${non_prefixed_files[@]:-}"; do
+            bn=$(basename "$f")
+            echo "Deleting non-prefixed file: ${bn}"
+            rm -f "$f" || echo " Failed to delete $f"
+          done
+
+          echo "Global post-process complete. Kept files:"
+          for s in "${!best_for_subtype[@]}"; do
+            echo "  - $(basename "${best_for_subtype[$s]}")"
+          done
           SH
           chmod +x .github/scripts/*.sh
 
