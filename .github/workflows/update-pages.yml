@@ -26,7 +26,7 @@ jobs:
           ARTIFACT_NAME: ""            # leave empty to consider all, or set to exact name
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # or ${{ secrets.UPSTREAM_PAT }} if upstream is private
           ARTIFACTS_DIR: data_zips
-          MAX_RUNS: 200
+          MAX_RUNS: 400
           EXCLUDE_PATTERNS: "test tmp debug"
         run: |
           set -euo pipefail
