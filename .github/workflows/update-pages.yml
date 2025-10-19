@@ -32,7 +32,7 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Add puppeteer helper and scripts
+            - name: Add puppeteer helper and scripts
         run: |
           mkdir -p .github/scripts
           cat > .github/scripts/fetch_page.js <<'NODEJS'
@@ -140,7 +140,7 @@ jobs:
               if [ -s "$out" ] && unzip -t "$out" >/dev/null 2>&1; then
                 tmpd=$(mktemp -d)
                 unzip -q "$out" -d "$tmpd"
-                find "$tmpd" -type f $ -name "agg_*.json" -o -name "*.json" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" $ -print0 \
+                find "$tmpd" -type f -name "agg_*.json" -o -name "*.json" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" -print0 \
                   | while IFS= read -r -d '' f; do
                       dest=$(basename "$f" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
                       cp -f "$f" "${docs_data}/${dest}"
