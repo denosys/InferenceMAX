@@ -33,13 +33,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
        - name: Add puppeteer helper and scripts
-               - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Add puppeteer helper and scripts
-        run: |
+         run: |
           mkdir -p .github/scripts
           cat > .github/scripts/fetch_page.js <<'NODEJS'
           const puppeteer = require('puppeteer');
