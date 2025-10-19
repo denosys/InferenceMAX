@@ -25,7 +25,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install jq
+      - name: Install jq and unzip
         run: sudo apt-get update && sudo apt-get install -y jq unzip
 
       - name: Download selected artifacts from public page runs
@@ -36,16 +36,16 @@ jobs:
 
           # Allowed artifact basenames (exact)
           read -r -d '' ALLOWED <<'EOT' || true
-          results_gptoss_1k1k.zip
-          results_gptoss_8k1k.zip
-          results_gptoss_1k8k.zip
-          results_70b_1k1k.zip
-          results_70b_8k1k.zip
-          results_70b_1k8k.zip
-          results_dsr1_1k1k.zip
-          results_dsr1_8k1k.zip
-          results_dsr1_1k8k.zip
-          EOT
+results_gptoss_1k1k.zip
+results_gptoss_8k1k.zip
+results_gptoss_1k8k.zip
+results_70b_1k1k.zip
+results_70b_8k1k.zip
+results_70b_1k8k.zip
+results_dsr1_1k1k.zip
+results_dsr1_8k1k.zip
+results_dsr1_1k8k.zip
+EOT
 
           is_allowed() {
             local name="$1"
@@ -55,7 +55,7 @@ jobs:
             return 1
           }
 
-          # 1) Download public page
+          # 1) Download public page (no token needed)
           curl -sS "${PUBLIC_PAGE}" -o /tmp/im_public.html
 
           # 2) Extract run URLs (GitHub actions run links)
