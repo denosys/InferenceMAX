@@ -171,13 +171,12 @@ jobs:
                       echo "   -> extracted ${dest}"
                   done
                 rm -rf "$tmpd"
-          
-                # --- post-process: keep newest 3 per runId, move older to docs/data/older ---
+                # --- post-process: keep one per (runId, subtype) and only for newest runId per subtype ---
                 docs_data="${docs_data%/}"
                 older_dir="${docs_data}/older"
                 mkdir -p "$older_dir"
-          
-                # optional normalization: if filename contains '__' remove prefix up to '__' when safe
+                
+                # optional normalization left as-is (unchanged)
                 for ff in "${docs_data}"/*__agg_*.json; do
                   [ -e "$ff" ] || continue
                   bn=$(basename "$ff")
@@ -186,55 +185,77 @@ jobs:
                     mv -f "$ff" "${docs_data}/${newname}"
                   fi
                 done
-          
-                # collect files per runId (prefix before first '-')
-                shopt -s nullglob
-                declare -A seen_runs
+                
+                # Build best file per (subtype, run): best = highest artifact-id (number after first '-')
+                declare -A best_for_run   # key = "${subtype}::${runId}" -> filepath
+                declare -A best_artid     # key = "${subtype}::${runId}" -> artifact_id
+                declare -A seen_subtypes
+                
                 for ff in "${docs_data}"/*; do
                   [ -f "$ff" ] || continue
                   bn=$(basename "$ff")
-                  if [[ "$bn" =~ ^([0-9]+)- ]]; then
+                  if [[ "$bn" =~ ^([0-9]+)-([0-9]+)-(.+)$ ]]; then
                     run="${BASH_REMATCH[1]}"
-                    echo "$ff" >> "/tmp/__docs_files_for_run_${run}.lst"
-                    seen_runs["$run"]=1
+                    artid="${BASH_REMATCH[2]}"
+                    rest="${BASH_REMATCH[3]}"
+                    subtype=$(printf '%s' "$rest" | sed -E 's/__.*$//' | sed -E 's/\.[^.]+$//')
+                    key="${subtype}::${run}"
+                    seen_subtypes["$subtype"]=1
+                    prev="${best_artid[$key]:-0}"
+                    if [ "$artid" -gt "$prev" ]; then
+                      best_artid[$key]="$artid"
+                      best_for_run[$key]="$ff"
+                    fi
+                  else
+                    # non-matching filenames: bucket under subtype "other" with run "0"
+                    subtype="other"
+                    run="0"
+                    key="${subtype}::${run}"
+                    seen_subtypes["$subtype"]=1
+                    if [ -z "${best_for_run[$key]:-}" ]; then
+                      best_artid[$key]=0
+                      best_for_run[$key]="$ff"
+                    fi
                   fi
                 done
-          
-                for run in "${!seen_runs[@]}"; do
-                  list="/tmp/__docs_files_for_run_${run}.lst"
-                  if [ -f "$list" ]; then
-                    mapfile -t sorted < <(xargs -d '\n' -a "$list" -I{} stat -c '%Y %n' {} 2>/dev/null | sort -rn | awk '{ $1=""; sub(/^ /,""); print $0 }')
-                    idx=0
-                    for file in "${sorted[@]}"; do
-                      idx=$((idx+1))
-                      if [ "$idx" -le 3 ]; then
-                        :
-                      else
-                        mv -f "$file" "$older_dir/" || echo "Failed to move $file"
-                      fi
-                    done
-                    rm -f "$list"
-                  fi
+                
+                # For each subtype keep only the best file of the highest runId; move all other best files to older
+                for subtype in "${!seen_subtypes[@]}"; do
+                  runids=()
+                  for k in "${!best_for_run[@]}"; do
+                    IFS='::' read -r sk run <<< "$k"
+                    [ "$sk" = "$subtype" ] && runids+=("$run")
+                  done
+                  [ "${#runids[@]}" -gt 0 ] || continue
+                
+                  # find numeric max runId
+                  max_run=-1
+                  for r in "${runids[@]}"; do
+                    if [ "$r" -eq "$r" ] 2>/dev/null; then
+                      [ "$r" -gt "$max_run" ] && max_run="$r"
+                    fi
+                  done
+                
+                  keep_key="${subtype}::${max_run}"
+                  keep_file="${best_for_run[$keep_key]:-}"
+                
+                  for k in "${!best_for_run[@]}"; do
+                    IFS='::' read -r sk run <<< "$k"
+                    [ "$sk" = "$subtype" ] || continue
+                    fpath="${best_for_run[$k]}"
+                    [ -n "$fpath" ] || continue
+                    if [ "$k" = "$keep_key" ]; then
+                      echo "Keeping for subtype ${subtype}: $(basename "$fpath")"
+                    else
+                      echo "Moving older for subtype ${subtype}: $(basename "$fpath") -> ${older_dir}/"
+                      mv -f "$fpath" "${older_dir}/" || echo " Failed to move $fpath"
+                    fi
+                  done
                 done
-          
-                # for files without runId prefix, keep only latest per pattern
-                for pattern in agg_*.json results_*.json; do
-                  files=( "${docs_data}/${pattern}" )
-                  if [ "${#files[@]}" -gt 1 ]; then
-                    mapfile -t sorted2 < <(for fff in "${files[@]}"; do [ -f "$fff" ] && printf '%s\t%s\n' "$(stat -c %Y "$fff")" "$fff"; done | sort -r -n | awk -F'\t' '{print $2}')
-                    idx=0
-                    for fff in "${sorted2[@]}"; do
-                      idx=$((idx+1))
-                      if [ "$idx" -gt 1 ]; then
-                        mv -f "$fff" "$older_dir/" || echo "Failed to move $fff"
-                      fi
-                    done
-                  fi
-                done
-          
+                
                 rm -f /tmp/__docs_files_for_run_*.lst 2>/dev/null || true
-                echo "Post-process: kept newest 3 per runId in ${docs_data}, older moved to ${older_dir}."
-          
+                echo "Post-process: kept one file per (runId,subtype) for newest runId per subtype. Older moved to ${older_dir}."
+
               else
                 echo "  Warning: artifact $out not a valid zip or empty"
               fi
