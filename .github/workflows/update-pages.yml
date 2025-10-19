@@ -36,16 +36,16 @@ jobs:
 
           # Allowed artifact basenames (exact)
           read -r -d '' ALLOWED <<'EOT' || true
-results_gptoss_1k1k.zip
-results_gptoss_8k1k.zip
-results_gptoss_1k8k.zip
-results_70b_1k1k.zip
-results_70b_8k1k.zip
-results_70b_1k8k.zip
-results_dsr1_1k1k.zip
-results_dsr1_8k1k.zip
-results_dsr1_1k8k.zip
-EOT
+          results_gptoss_1k1k.zip
+          results_gptoss_8k1k.zip
+          results_gptoss_1k8k.zip
+          results_70b_1k1k.zip
+          results_70b_8k1k.zip
+          results_70b_1k8k.zip
+          results_dsr1_1k1k.zip
+          results_dsr1_8k1k.zip
+          results_dsr1_1k8k.zip
+          EOT
 
           is_allowed() {
             local name="$1"
