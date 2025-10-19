@@ -33,128 +33,128 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Add puppeteer helper and scripts
-        run: |
-          mkdir -p .github/scripts
-          cat > .github/scripts/fetch_page.js <<'NODEJS'
-          const puppeteer = require('puppeteer');
-          const fs = require('fs');
-          (async () => {
-            const url = process.argv[2];
-            const out = process.argv[3] || '/tmp/im_public.html';
-            if (!url) { console.error('Missing url'); process.exit(2); }
-            const browser = await puppeteer.launch({ args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage'], headless: true });
-            const page = await browser.newPage();
-            await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
-            await page.waitForTimeout(1000);
-            const html = await page.content();
-            fs.writeFileSync(out, html);
-            await browser.close();
-            console.log('Saved rendered page to', out);
-          })().catch(e => { console.error(e); process.exit(1); });
-          NODEJS
+  run: |
+    mkdir -p .github/scripts
+    cat > .github/scripts/fetch_page.js <<'NODEJS'
+    const puppeteer = require('puppeteer');
+    const fs = require('fs');
+    function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+    (async () => {
+      const url = process.argv[2];
+      const out = process.argv[3] || '/tmp/im_public.html';
+      if (!url) { console.error('Missing url'); process.exit(2); }
+      const browser = await puppeteer.launch({
+        args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage'],
+        headless: true
+      });
+      try {
+        const page = await browser.newPage();
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+        await sleep(1000);
+        const html = await page.content();
+        fs.writeFileSync(out, html);
+        console.log('Saved rendered page to', out);
+        await browser.close();
+        process.exit(0);
+      } catch (e) {
+        console.error('Rendering failed:', e);
+        try { await browser.close(); } catch {}
+        process.exit(1);
+      }
+    })();
+    NODEJS
 
-          cat > .github/scripts/parse_runs.sh <<'SH'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          infile="$1"
-          out="$2"
-          grep -Eo 'https?://github.com/[^/]+/[^/]+/actions/runs/[0-9]+' "$infile" > "${out}.abs" || true
-          grep -Eo '/[^/]+/[^/]+/actions/runs/[0-9]+' "$infile" | sed 's|^|https://github.com|' >> "${out}.abs" || true
-          sort -u "${out}.abs" > "$out" || true
-          echo "Parsed run list written to $out"
-          SH
+    cat > .github/scripts/parse_runs.sh <<'SH'
+    #!/usr/bin/env bash
+    set -euo pipefail
+    infile="$1"
+    out="$2"
+    grep -Eo 'https?://github.com/[^/]+/[^/]+/actions/runs/[0-9]+' "$infile" > "${out}.abs" || true
+    grep -Eo '/[^/]+/[^/]+/actions/runs/[0-9]+' "$infile" | sed 's|^|https://github.com|' >> "${out}.abs" || true
+    sort -u "${out}.abs" > "$out" || true
+    echo "Parsed run list written to $out"
+    SH
 
-          cat > .github/scripts/download_artifacts.sh <<'SH'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          runs_file="$1"
-          artifacts_dir="$2"
-          docs_data="$3"
-          secret_pat="$4"
-
-          mkdir -p "$artifacts_dir" "$docs_data" /tmp/im_runs
-          read -r -d '' ALLOWED <<'EOT' || true
-          results_gptoss_1k1k.zip
-          results_gptoss_8k1k.zip
-          results_gptoss_1k8k.zip
-          results_70b_1k1k.zip
-          results_70b_8k1k.zip
-          results_70b_1k8k.zip
-          results_dsr1_1k1k.zip
-          results_dsr1_8k1k.zip
-          results_dsr1_1k8k.zip
-          EOT
-
-          is_allowed() {
-            local name="$1"
-            while IFS= read -r line; do
-              [ "$line" = "$name" ] && return 0
-            done <<< "$ALLOWED"
-            return 1
-          }
-
-          AUTH_HDR="Authorization: token ${secret_pat}"
-
-          while read -r run_url; do
-            [ -z "$run_url" ] && continue
-            owner=$(echo "$run_url" | awk -F'/' '{print $4}')
-            repo=$(echo "$run_url" | awk -F'/' '{print $5}')
-            run_id=$(echo "$run_url" | awk -F'/' '{print $NF}')
-            echo "Processing run $run_id from $owner/$repo"
-
-            api_url="https://api.github.com/repos/${owner}/${repo}/actions/runs/${run_id}/artifacts?per_page=200"
-            tmp_art="/tmp/im_runs/artifacts_${run_id}.json"
-            curl -sS -H "Accept: application/vnd.github+json" -H "$AUTH_HDR" "$api_url" -o "$tmp_art" || { echo "Failed to query artifacts for run $run_id"; continue; }
-
-            if ! jq -e '.artifacts | length > 0' "$tmp_art" >/dev/null 2>&1; then
-              echo " No artifacts for run $run_id"
-              continue
-            fi
-
-            jq -c '.artifacts[]' "$tmp_art" | while read -r art; do
-              art_id=$(echo "$art" | jq -r '.id')
-              art_name=$(echo "$art" | jq -r '.name')
-              norm_name="$art_name"
-              case "$norm_name" in *.zip) ;; *) norm_name="${norm_name}.zip" ;; esac
-
-              if ! is_allowed "$norm_name"; then
-                echo " Skipping artifact not in allowed list: $art_name"
-                continue
-              fi
-
-              archive_url=$(echo "$art" | jq -r '.archive_download_url')
-              safe_name="${run_id}-${art_id}-${art_name}"
-              out="${artifacts_dir}/${safe_name}.zip"
-
-              echo " Downloading artifact $art_name from run $run_id"
-              http_code=$(curl -sSL -w "%{http_code}" -H "Accept: application/vnd.github+json" -H "$AUTH_HDR" -o "$out" "$archive_url" || echo "000")
-              if [ "$http_code" != "200" ] && [ "$http_code" != "302" ] && [ "$http_code" != "307" ]; then
-                echo "  Warning: failed to download artifact $art_id (http $http_code)"
-                rm -f "$out" || true
-                continue
-              fi
-
-              if [ -s "$out" ] && unzip -t "$out" >/dev/null 2>&1; then
-                tmpd=$(mktemp -d)
-                unzip -q "$out" -d "$tmpd"
-                find "$tmpd" -type f $ -name "agg_*.json" -o -name "*.json" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" $ -print0 \
-                  | while IFS= read -r -d '' f; do
-                      dest=$(basename "$f" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
-                      cp -f "$f" "${docs_data}/${dest}"
-                      echo "   -> extracted ${dest}"
-                  done
-                rm -rf "$tmpd"
-              else
-                echo "  Warning: artifact $out not a valid zip or empty"
-              fi
+    cat > .github/scripts/download_artifacts.sh <<'SH'
+    #!/usr/bin/env bash
+    set -euo pipefail
+    runs_file="$1"
+    artifacts_dir="$2"
+    docs_data="$3"
+    secret_pat="$4"
+    mkdir -p "$artifacts_dir" "$docs_data" /tmp/im_runs
+    read -r -d '' ALLOWED <<'EOT' || true
+    results_gptoss_1k1k.zip
+    results_gptoss_8k1k.zip
+    results_gptoss_1k8k.zip
+    results_70b_1k1k.zip
+    results_70b_8k1k.zip
+    results_70b_1k8k.zip
+    results_dsr1_1k1k.zip
+    results_dsr1_8k1k.zip
+    results_dsr1_1k8k.zip
+    EOT
+    is_allowed() {
+      local name="$1"
+      while IFS= read -r line; do
+        [ "$line" = "$name" ] && return 0
+      done <<< "$ALLOWED"
+      return 1
+    }
+    AUTH_HDR="Authorization: token ${secret_pat}"
+    while read -r run_url; do
+      [ -z "$run_url" ] && continue
+      owner=$(echo "$run_url" | awk -F'/' '{print $4}')
+      repo=$(echo "$run_url" | awk -F'/' '{print $5}')
+      run_id=$(echo "$run_url" | awk -F'/' '{print $NF}')
+      echo "Processing run $run_id from $owner/$repo"
+      api_url="https://api.github.com/repos/${owner}/${repo}/actions/runs/${run_id}/artifacts?per_page=200"
+      tmp_art="/tmp/im_runs/artifacts_${run_id}.json"
+      curl -sS -H "Accept: application/vnd.github+json" -H "$AUTH_HDR" "$api_url" -o "$tmp_art" || { echo "Failed to query artifacts for run $run_id"; continue; }
+      if ! jq -e '.artifacts | length > 0' "$tmp_art" >/dev/null 2>&1; then
+        echo " No artifacts for run $run_id"
+        continue
+      fi
+      jq -c '.artifacts[]' "$tmp_art" | while read -r art; do
+        art_id=$(echo "$art" | jq -r '.id')
+        art_name=$(echo "$art" | jq -r '.name')
+        norm_name="$art_name"
+        case "$norm_name" in *.zip) ;; *) norm_name="${norm_name}.zip" ;; esac
+        if ! is_allowed "$norm_name"; then
+          echo " Skipping artifact not in allowed list: $art_name"
+          continue
+        fi
+        archive_url=$(echo "$art" | jq -r '.archive_download_url')
+        safe_name="${run_id}-${art_id}-${art_name}"
+        out="${artifacts_dir}/${safe_name}.zip"
+        echo " Downloading artifact $art_name from run $run_id"
+        http_code=$(curl -sSL -w "%{http_code}" -H "Accept: application/vnd.github+json" -H "$AUTH_HDR" -o "$out" "$archive_url" || echo "000")
+        if [ "$http_code" != "200" ] && [ "$http_code" != "302" ] && [ "$http_code" != "307" ]; then
+          echo "  Warning: failed to download artifact $art_id (http $http_code)"
+          rm -f "$out" || true
+          continue
+        fi
+        if [ -s "$out" ] && unzip -t "$out" >/dev/null 2>&1; then
+          tmpd=$(mktemp -d)
+          unzip -q "$out" -d "$tmpd"
+          find "$tmpd" -type f $ -name "agg_*.json" -o -name "*.json" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" $ -print0 \
+            | while IFS= read -r -d '' f; do
+                dest=$(basename "$f" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
+                cp -f "$f" "${docs_data}/${dest}"
+                echo "   -> extracted ${dest}"
             done
-          done < "$runs_file"
+          rm -rf "$tmpd"
+        else
+          echo "  Warning: artifact $out not a valid zip or empty"
+        fi
+      done
+    done < "$runs_file"
+    echo "Download step complete. Files in ${docs_data}:"
+    ls -la "${docs_data}" || true
+    SH
 
-          echo "Download step complete. Files in ${docs_data}:"
-          ls -la "${docs_data}" || true
-          SH
+    chmod +x .github/scripts/*.sh
 
-          chmod +x .github/scripts/*.sh
 
       - name: Install node deps (puppeteer)
         run: |
