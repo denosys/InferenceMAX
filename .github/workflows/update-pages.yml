@@ -11,30 +11,102 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       SECRET_PAT: ${{ secrets.SECRET_PAT }}
-      REPO_OWNER: InferenceMAX
-      REPO_NAME: InferenceMAX
       PUBLIC_PAGE: https://inferencemax.semianalysis.com
       ARTIFACTS_DIR: data_zips
       DOCS_DATA: docs/data
-
+      NODE_VERSION: "20"
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install jq and unzip
-        run: sudo apt-get update && sudo apt-get install -y jq unzip
-
-      - name: Download selected artifacts from public page runs
+      - name: Install system deps
         run: |
+          sudo apt-get update
+          sudo apt-get install -y jq unzip curl ca-certificates fonts-liberation
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Add puppeteer helper and scripts
+        run: |
+          mkdir -p .github/scripts
+          cat > .github/scripts/fetch_page.js <<'NODEJS'
+          const puppeteer = require('puppeteer-core');
+          const chromium = require('chrome-aws-lambda'); // fallback for AWS chromium binary
+          const fs = require('fs');
+          (async () => {
+            const url = process.argv[2];
+            const out = process.argv[3] || '/tmp/im_public.html';
+            if (!url) { console.error('Missing url'); process.exit(2); }
+            // launch chrome from system if available, else chromium
+            const launchOpts = {
+              args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage'],
+              headless: true
+            };
+            try {
+              // try system chrome
+              const browser = await puppeteer.launch(launchOpts);
+              const page = await browser.newPage();
+              await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+              await page.waitForTimeout(1000);
+              const html = await page.content();
+              fs.writeFileSync(out, html);
+              await browser.close();
+              console.log('Saved rendered page to', out);
+              process.exit(0);
+            } catch (e) {
+              // fallback to chrome-aws-lambda bundled chromium
+              try {
+                const browser = await chromium.puppeteer.launch({
+                  args: chromium.args.concat(['--no-sandbox','--disable-setuid-sandbox']),
+                  defaultViewport: chromium.defaultViewport,
+                  executablePath: await chromium.executablePath,
+                  headless: chromium.headless,
+                });
+                const page = await browser.newPage();
+                await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+                await page.waitForTimeout(1000);
+                const html = await page.content();
+                fs.writeFileSync(out, html);
+                await browser.close();
+                console.log('Saved rendered page (aws-chromium) to', out);
+                process.exit(0);
+              } catch (err) {
+                console.error('Puppeteer both attempts failed:', err);
+                process.exit(3);
+              }
+            }
+          })();
+          NODEJS
+
+          cat > .github/scripts/parse_runs.sh <<'SH'
+          #!/usr/bin/env bash
           set -euo pipefail
+          infile="$1"
+          out="$2"
+          # Extract github run links (absolute and relative)
+          grep -Eo 'https?://github.com/[^/]+/[^/]+/actions/runs/[0-9]+' "$infile" > "${out}.abs" || true
+          grep -Eo '/[^/]+/[^/]+/actions/runs/[0-9]+' "$infile" | sed 's|^|https://github.com|' >> "${out}.abs" || true
+          sort -u "${out}.abs" > "$out" || true
+          # optionally limit to first 3
+          # head -n 3 "$out" > "${out}.head"; mv "${out}.head" "$out"
+          echo "Parsed run list written to $out"
+          SH
 
-          mkdir -p "${ARTIFACTS_DIR}" "${DOCS_DATA}" /tmp/im_runs
+          cat > .github/scripts/download_artifacts.sh <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          runs_file="$1"        # file with one run URL per line
+          artifacts_dir="$2"
+          docs_data="$3"
+          secret_pat="$4"
 
-          # Allowed artifact basenames (exact)
+          mkdir -p "$artifacts_dir" "$docs_data" /tmp/im_runs
           read -r -d '' ALLOWED <<'EOT' || true
           results_gptoss_1k1k.zip
           results_gptoss_8k1k.zip
@@ -55,40 +127,29 @@ jobs:
             return 1
           }
 
-          # 1) Download public page (no token needed)
-          curl -sS "${PUBLIC_PAGE}" -o /tmp/im_public.html
+          AUTH_HDR="Authorization: token ${secret_pat}"
 
-          # 2) Extract run URLs (GitHub actions run links)
-          grep -Eo 'https://github.com/[^/]+/[^/]+/actions/runs/[0-9]+' /tmp/im_public.html | sort -u > /tmp/im_runs/list.txt
-
-          if [ ! -s /tmp/im_runs/list.txt ]; then
-            echo "No run links found on public page."
-            exit 0
-          fi
-
-          # 3) For each run URL, call GitHub API to list artifacts and download allowed artifacts
           while read -r run_url; do
+            [ -z "$run_url" ] && continue
+            owner=$(echo "$run_url" | awk -F'/' '{print $4}')
+            repo=$(echo "$run_url" | awk -F'/' '{print $5}')
             run_id=$(echo "$run_url" | awk -F'/' '{print $NF}')
-            echo "Processing run $run_id from $run_url"
+            echo "Processing run $run_id from $owner/$repo"
 
-            api_url="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/actions/runs/${run_id}/artifacts?per_page=100"
-            curl -sS -H "Accept: application/vnd.github+json" -H "Authorization: token ${GITHUB_TOKEN}" "$api_url" -o /tmp/im_runs/artifacts_${run_id}.json
+            api_url="https://api.github.com/repos/${owner}/${repo}/actions/runs/${run_id}/artifacts?per_page=200"
+            tmp_art="/tmp/im_runs/artifacts_${run_id}.json"
+            curl -sS -H "Accept: application/vnd.github+json" -H "$AUTH_HDR" "$api_url" -o "$tmp_art" || { echo "Failed to query artifacts for run $run_id"; continue; }
 
-            if ! jq -e '.artifacts | length > 0' /tmp/im_runs/artifacts_${run_id}.json >/dev/null 2>&1; then
+            if ! jq -e '.artifacts | length > 0' "$tmp_art" >/dev/null 2>&1; then
               echo " No artifacts for run $run_id"
               continue
             fi
 
-            jq -c '.artifacts[]' /tmp/im_runs/artifacts_${run_id}.json | while read -r art; do
+            jq -c '.artifacts[]' "$tmp_art" | while read -r art; do
               art_id=$(echo "$art" | jq -r '.id')
               art_name=$(echo "$art" | jq -r '.name')
-
-              # Normalize to ensure .zip suffix for comparison
               norm_name="$art_name"
-              case "$norm_name" in
-                *.zip) ;;
-                *) norm_name="${norm_name}.zip" ;;
-              esac
+              case "$norm_name" in *.zip) ;; *) norm_name="${norm_name}.zip" ;; esac
 
               if ! is_allowed "$norm_name"; then
                 echo " Skipping artifact not in allowed list: $art_name"
@@ -97,11 +158,11 @@ jobs:
 
               archive_url=$(echo "$art" | jq -r '.archive_download_url')
               safe_name="${run_id}-${art_id}-${art_name}"
-              out="${ARTIFACTS_DIR}/${safe_name}.zip"
+              out="${artifacts_dir}/${safe_name}.zip"
 
-              echo " Downloading allowed artifact: $art_name -> $out"
-              http_code=$(curl -sSL -w "%{http_code}" -H "Accept: application/vnd.github+json" -H "Authorization: token ${GITHUB_TOKEN}" -o "$out" "$archive_url" || echo "000")
-              if [ "$http_code" != "200" ]; then
+              echo " Downloading artifact $art_name from run $run_id"
+              http_code=$(curl -sSL -w "%{http_code}" -H "Accept: application/vnd.github+json" -H "$AUTH_HDR" -o "$out" "$archive_url" || echo "000")
+              if [ "$http_code" != "200" ] && [ "$http_code" != "302" ] && [ "$http_code" != "307" ]; then
                 echo "  Warning: failed to download artifact $art_id (http $http_code)"
                 rm -f "$out" || true
                 continue
@@ -113,7 +174,7 @@ jobs:
                 find "$tmpd" -type f $ -name "agg_*.json" -o -name "*.json" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" $ -print0 \
                   | while IFS= read -r -d '' f; do
                       dest=$(basename "$f" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
-                      cp -f "$f" "${DOCS_DATA}/${dest}"
+                      cp -f "$f" "${docs_data}/${dest}"
                       echo "   -> extracted ${dest}"
                   done
                 rm -rf "$tmpd"
@@ -121,31 +182,55 @@ jobs:
                 echo "  Warning: artifact $out not a valid zip or empty"
               fi
             done
+          done < "$runs_file"
 
-          done < /tmp/im_runs/list.txt
+          echo "Download step complete. Files in ${docs_data}:"
+          ls -la "${docs_data}" || true
+          SH
 
-          echo "Done. Files copied to ${DOCS_DATA}:"
-          ls -la "${DOCS_DATA}" || true
+          chmod +x .github/scripts/*.sh
+
+      - name: Install node deps (puppeteer + chrome-aws-lambda)
+        run: |
+          npm init -y
+          npm i puppeteer-core chrome-aws-lambda --no-audit --no-fund
+          # ensure local chromium available on runner; puppeteer-core will try system Chrome first
+
+      - name: Render public page with Puppeteer
+        env:
+          PUBLIC_PAGE: ${{ env.PUBLIC_PAGE }}
+        run: |
+          node .github/scripts/fetch_page.js "${PUBLIC_PAGE}" /tmp/im_public.html
+          ls -la /tmp/im_public.html
+
+      - name: Parse run links from rendered page
+        run: |
+          .github/scripts/parse_runs.sh /tmp/im_public.html /tmp/im_runs/list.txt
+          echo "Run links:"
+          cat /tmp/im_runs/list.txt || true
+
+      - name: Download allowed artifacts from runs
+        env:
+          SECRET_PAT: ${{ env.SECRET_PAT }}
+          ARTIFACTS_DIR: ${{ env.ARTIFACTS_DIR }}
+          DOCS_DATA: ${{ env.DOCS_DATA }}
+        run: |
+          .github/scripts/download_artifacts.sh /tmp/im_runs/list.txt "${ARTIFACTS_DIR}" "${DOCS_DATA}" "${SECRET_PAT}"
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.11"
 
-      - name: Install deps
+      - name: Install python deps
         run: pip install --upgrade pip && pip install pandas plotly
 
       - name: Generate HTML
         run: |
           set -euo pipefail
-          echo "PWD: $(pwd)"
-          echo "List data_zips:"
-          ls -la data_zips || true
           mkdir -p docs data_zips
-          python3 -u generate_html.py
-          echo "After generate, files in docs:"
+          python3 -u generate_html.py || true
           find docs -maxdepth 2 -type f -print || true
-          echo "Files in docs/data (if any):"
           ls -la docs/data || true
 
       - name: Commit and push generated site
@@ -155,10 +240,9 @@ jobs:
           git config --local user.name "GitHub Actions"
           git remote set-url origin https://x-access-token:${{ secrets.SECRET_PAT }}@github.com/${{ github.repository }}.git
           git add docs || true
-          git status --porcelain
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
             git commit -m "nightly: update pages and data"
+            git push origin HEAD
           fi
-          git push origin HEAD
