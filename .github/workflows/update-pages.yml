@@ -69,8 +69,9 @@ jobs:
           set -euo pipefail
           infile="$1"
           out="$2"
+          mkdir -p "$(dirname "$out")" /tmp/im_runs
           tmp_out="${out}.abs"
-          : > "$tmp_out" || true
+          : > "$tmp_out"
           grep -Eo 'https?://github.com/[^/]+/[^/]+/actions/runs/[0-9]+' "$infile" >> "$tmp_out" || true
           grep -Eo '/[^/]+/[^/]+/actions/runs/[0-9]+' "$infile" | sed 's|^|https://github.com|' >> "$tmp_out" || true
           sort -u "$tmp_out" > "$out" || true
