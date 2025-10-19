@@ -10,6 +10,15 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SECRET_PAT: ${{ secrets.SECRET_PAT }}
+      REPO_OWNER: InferenceMAX
+      REPO_NAME: InferenceMAX
+      PUBLIC_PAGE: https://inferencemax.semianalysis.com
+      ARTIFACTS_DIR: data_zips
+      DOCS_DATA: docs/data
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -17,110 +26,106 @@ jobs:
           fetch-depth: 0
 
       - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+        run: sudo apt-get update && sudo apt-get install -y jq unzip
 
-      - name: Download artifacts from upstream repo (results and graphs, exclude tests)
-        env:
-          REPO_OWNER: InferenceMAX
-          REPO_NAME: InferenceMAX
-          ARTIFACT_NAME: ""            # leave empty to consider all, or set to exact name
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # or ${{ secrets.UPSTREAM_PAT }} if upstream is private
-          ARTIFACTS_DIR: data_zips
-          MAX_RUNS: 400
-          EXCLUDE_PATTERNS: "test tmp debug"
+      - name: Download selected artifacts from public page runs
         run: |
           set -euo pipefail
-          mkdir -p "$ARTIFACTS_DIR"
-          tmp_runs=/tmp/runs.json
-          runs_url="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/actions/runs?per_page=${MAX_RUNS}"
-          echo "Fetching runs from $runs_url"
-          curl -sS -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "$runs_url" -o "$tmp_runs"
-          if ! jq -e '.workflow_runs | length > 0' "$tmp_runs" >/dev/null 2>&1; then
-            echo "No workflow runs found in upstream repo."
+
+          mkdir -p "${ARTIFACTS_DIR}" "${DOCS_DATA}" /tmp/im_runs
+
+          # Allowed artifact basenames (exact)
+          read -r -d '' ALLOWED <<'EOT' || true
+          results_gptoss_1k1k.zip
+          results_gptoss_8k1k.zip
+          results_gptoss_1k8k.zip
+          results_70b_1k1k.zip
+          results_70b_8k1k.zip
+          results_70b_1k8k.zip
+          results_dsr1_1k1k.zip
+          results_dsr1_8k1k.zip
+          results_dsr1_1k8k.zip
+          EOT
+
+          is_allowed() {
+            local name="$1"
+            while IFS= read -r line; do
+              [ "$line" = "$name" ] && return 0
+            done <<< "$ALLOWED"
+            return 1
+          }
+
+          # 1) Download public page
+          curl -sS "${PUBLIC_PAGE}" -o /tmp/im_public.html
+
+          # 2) Extract run URLs (GitHub actions run links)
+          grep -Eo 'https://github.com/[^/]+/[^/]+/actions/runs/[0-9]+' /tmp/im_public.html | sort -u > /tmp/im_runs/list.txt
+
+          if [ ! -s /tmp/im_runs/list.txt ]; then
+            echo "No run links found on public page."
             exit 0
           fi
 
-          manifest="$ARTIFACTS_DIR/manifest.csv"
-          echo "run_id,run_created_at,conclusion,artifact_id,artifact_name,size,http_code,unzip_ok,extracted_paths" > "$manifest"
+          # 3) For each run URL, call GitHub API to list artifacts and download allowed artifacts
+          while read -r run_url; do
+            run_id=$(echo "$run_url" | awk -F'/' '{print $NF}')
+            echo "Processing run $run_id from $run_url"
 
-          jq -c '.workflow_runs[]' "$tmp_runs" | while read -r run; do
-            run_id=$(echo "$run" | jq -r '.id')
-            run_created_at=$(echo "$run" | jq -r '.created_at')
-            run_conclusion=$(echo "$run" | jq -r '.conclusion')
-            # consider only successful/completed runs
-            if [ "$run_conclusion" != "success" ] && [ "$run_conclusion" != "completed" ]; then
+            api_url="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/actions/runs/${run_id}/artifacts?per_page=100"
+            curl -sS -H "Accept: application/vnd.github+json" -H "Authorization: token ${GITHUB_TOKEN}" "$api_url" -o /tmp/im_runs/artifacts_${run_id}.json
+
+            if ! jq -e '.artifacts | length > 0' /tmp/im_runs/artifacts_${run_id}.json >/dev/null 2>&1; then
+              echo " No artifacts for run $run_id"
               continue
             fi
 
-            artifacts_url="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/actions/runs/${run_id}/artifacts"
-            curl -sS -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "$artifacts_url" -o /tmp/artifacts.json
-            count=$(jq '.artifacts | length' /tmp/artifacts.json)
-            if [ "$count" -eq 0 ]; then
-              continue
-            fi
-
-            jq -c '.artifacts[]' /tmp/artifacts.json | while read -r art; do
+            jq -c '.artifacts[]' /tmp/im_runs/artifacts_${run_id}.json | while read -r art; do
               art_id=$(echo "$art" | jq -r '.id')
               art_name=$(echo "$art" | jq -r '.name')
-              archive_download_url=$(echo "$art" | jq -r '.archive_download_url')
 
-              # Only consider aggregated artifacts created by their collect template:
-              # names that begin with results_ or graphs_
-              if ! echo "$art_name" | grep -Eqi '^(results_|graphs_)'; then
+              # Normalize to ensure .zip suffix for comparison
+              norm_name="$art_name"
+              case "$norm_name" in
+                *.zip) ;;
+                *) norm_name="${norm_name}.zip" ;;
+              esac
+
+              if ! is_allowed "$norm_name"; then
+                echo " Skipping artifact not in allowed list: $art_name"
                 continue
               fi
 
-              # Exclude artifacts matching EXCLUDE_PATTERNS (case-insensitive)
-              skip=0
-              for ex in $EXCLUDE_PATTERNS; do
-                if echo "$art_name" | grep -qi "$ex"; then skip=1; break; fi
-              done
-              if [ "$skip" -eq 1 ]; then
-                echo "Skipping excluded artifact: $art_name"
-                continue
-              fi
-
-              # if ARTIFACT_NAME set, only download that
-              if [ -n "$ARTIFACT_NAME" ] && [ "$ARTIFACT_NAME" != "" ] && [ "$art_name" != "$ARTIFACT_NAME" ]; then
-                continue
-              fi
-
-              safe_name=$(echo "${run_id}-${art_id}-${art_name}" | tr ' /' '__')
+              archive_url=$(echo "$art" | jq -r '.archive_download_url')
+              safe_name="${run_id}-${art_id}-${art_name}"
               out="${ARTIFACTS_DIR}/${safe_name}.zip"
 
-              http_code=$(curl -sSL -w "%{http_code}" -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -o "$out" "$archive_download_url" || echo "000")
-              size=0
-              if [ -f "$out" ]; then size=$(stat -c%s "$out" || echo 0); fi
-              unzip_ok="false"
-              extracted_paths=""
-
-              if [ "$http_code" = "200" ] && [ "$size" -gt 0 ]; then
-                if unzip -t "$out" >/dev/null 2>&1; then
-                  unzip_ok="true"
-                  tmp_extract_dir=$(mktemp -d)
-                  unzip -q "$out" -d "$tmp_extract_dir"
-                  mkdir -p docs/data
-                  found_paths=""
-                  for f in $(find "$tmp_extract_dir" -type f -name "agg_*.json" -o -name "*.json" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg"); do
-                    dest_name=$(basename "$f")
-                    safe_dest=$(echo "$dest_name" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
-                    cp -f "$f" "docs/data/$safe_dest"
-                    found_paths="${found_paths}${safe_dest};"
-                  done
-                  extracted_paths="$found_paths"
-                  rm -rf "$tmp_extract_dir"
-                fi
+              echo " Downloading allowed artifact: $art_name -> $out"
+              http_code=$(curl -sSL -w "%{http_code}" -H "Accept: application/vnd.github+json" -H "Authorization: token ${GITHUB_TOKEN}" -o "$out" "$archive_url" || echo "000")
+              if [ "$http_code" != "200" ]; then
+                echo "  Warning: failed to download artifact $art_id (http $http_code)"
+                rm -f "$out" || true
+                continue
               fi
 
-              echo "${run_id},${run_created_at},${run_conclusion},${art_id},${art_name},${size},${http_code},${unzip_ok},\"${extracted_paths}\"" >> "$manifest"
+              if [ -s "$out" ] && unzip -t "$out" >/dev/null 2>&1; then
+                tmpd=$(mktemp -d)
+                unzip -q "$out" -d "$tmpd"
+                find "$tmpd" -type f $ -name "agg_*.json" -o -name "*.json" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" $ -print0 \
+                  | while IFS= read -r -d '' f; do
+                      dest=$(basename "$f" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
+                      cp -f "$f" "${DOCS_DATA}/${dest}"
+                      echo "   -> extracted ${dest}"
+                  done
+                rm -rf "$tmpd"
+              else
+                echo "  Warning: artifact $out not a valid zip or empty"
+              fi
             done
-          done
 
-          echo "Downloaded and extracted aggregated artifacts. Manifest:"
-          ls -la "$ARTIFACTS_DIR" || true
-          ls -la docs/data || true
-          echo "Manifest head:"
-          head -n 20 "$manifest" || true
+          done < /tmp/im_runs/list.txt
+
+          echo "Done. Files copied to ${DOCS_DATA}:"
+          ls -la "${DOCS_DATA}" || true
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -136,9 +141,7 @@ jobs:
           echo "PWD: $(pwd)"
           echo "List data_zips:"
           ls -la data_zips || true
-          # ensure output dirs exist
           mkdir -p docs data_zips
-          # run generator (non-buffered)
           python3 -u generate_html.py
           echo "After generate, files in docs:"
           find docs -maxdepth 2 -type f -print || true
