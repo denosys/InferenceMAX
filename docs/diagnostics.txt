@@ -1,34 +1,34 @@
-zip_files_found: ['data_zips/18565968408-4290009482-results_gptoss_1k1k.zip', 'data_zips/18565968408-4290012720-graphs_gptoss_1k1k.zip', 'data_zips/18577146883-4294636553-results_gptoss_8k1k.zip', 'data_zips/18577146883-4294637174-results_70b_8k1k.zip', 'data_zips/18577146883-4294637680-graphs_gptoss_8k1k.zip', 'data_zips/18599855208-4302279807-results_dsr1_1k1k.zip', 'data_zips/18599855208-4302285448-graphs_dsr1_1k1k.zip', 'data_zips/18600393148-4302552473-results_dsr1_8k1k.zip', 'data_zips/18600393148-4302554199-graphs_dsr1_8k1k.zip']
-saved_files: ['18565968408-4290009482-results_gptoss_1k1k__agg_gptoss_1k1k.json', '18577146883-4294636553-results_gptoss_8k1k__agg_gptoss_8k1k.json', '18577146883-4294637174-results_70b_8k1k__agg_70b_8k1k.json', '18599855208-4302279807-results_dsr1_1k1k__agg_dsr1_1k1k.json', '18600393148-4302552473-results_dsr1_8k1k__agg_dsr1_8k1k.json']
-records_count: 35
+zip_files_found: ['data_zips/18577146883-4294636553-results_gptoss_8k1k.zip', 'data_zips/18577146883-4294637174-results_70b_8k1k.zip', 'data_zips/18577146883-4294662928-results_dsr1_8k1k.zip', 'data_zips/18577199847-4294635620-results_dsr1_1k8k.zip', 'data_zips/18577199847-4294635735-results_gptoss_1k8k.zip', 'data_zips/18577199847-4294635940-results_70b_1k8k.zip']
+saved_files: ['18577146883-4294636553-results_gptoss_8k1k__agg_gptoss_8k1k.json', '18577146883-4294637174-results_70b_8k1k__agg_70b_8k1k.json', '18577146883-4294662928-results_dsr1_8k1k__agg_dsr1_8k1k.json', '18577199847-4294635620-results_dsr1_1k8k__agg_dsr1_1k8k.json', '18577199847-4294635735-results_gptoss_1k8k__agg_gptoss_1k8k.json', '18577199847-4294635940-results_70b_1k8k__agg_70b_1k8k.json']
+records_count: 27
 sample_record:
 {
-  "hw": "h100",
-  "tp": 4,
-  "conc": 4,
+  "hw": "mi300x",
+  "tp": 2,
+  "conc": 16,
   "model": "openai/gpt-oss-120b",
   "framework": "vllm",
   "precision": "fp4",
-  "tput_per_gpu": 369.919547017564,
-  "output_tput_per_gpu": 184.05975644804963,
-  "mean_ttft": 0.03827854071278125,
-  "median_ttft": 0.03536520339548588,
-  "std_ttft": 0.012618972873843136,
-  "p99_ttft": 0.0819521190598607,
-  "mean_tpot": 0.005234833732854433,
-  "mean_intvty": 191.02803470602748,
-  "median_tpot": 0.005262528526908418,
-  "median_intvty": 190.02272289580745,
-  "std_tpot": 8.137878483224653e-05,
-  "std_intvty": 12288.214945226704,
-  "p99_tpot": 0.00532505563732422,
-  "p99_intvty": 187.791465124013,
-  "mean_itl": 0.005234789464532014,
-  "median_itl": 0.005189870484173298,
-  "std_itl": 0.0011222118856503657,
-  "p99_itl": 0.00545793566852808,
-  "mean_e2el": 4.837140761315823,
-  "median_e2el": 4.87413100944832,
-  "std_e2el": 0.3362890112081427,
-  "p99_e2el": 5.378014761973171
+  "tput_per_gpu": 5057.80091144793,
+  "output_tput_per_gpu": 560.4366966333206,
+  "mean_ttft": 0.587517835519975,
+  "median_ttft": 0.24290714133530855,
+  "std_ttft": 0.9716966919325877,
+  "p99_ttft": 4.593530163802203,
+  "mean_tpot": 0.013298585856001124,
+  "mean_intvty": 75.19596525736905,
+  "median_tpot": 0.013305589438150058,
+  "median_intvty": 75.15638481469897,
+  "std_tpot": 0.0011005974395674953,
+  "std_intvty": 908.5974254064889,
+  "p99_tpot": 0.01586407433314315,
+  "p99_intvty": 63.03550897456429,
+  "mean_itl": 0.013312536998175048,
+  "median_itl": 0.010155908763408661,
+  "std_itl": 0.029021066192853395,
+  "p99_itl": 0.1935806889086962,
+  "mean_e2el": 12.757339767756639,
+  "median_e2el": 12.686422338243574,
+  "std_e2el": 1.6304818749387389,
+  "p99_e2el": 17.00300486754626
 }
