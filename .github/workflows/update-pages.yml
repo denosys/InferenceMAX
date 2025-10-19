@@ -113,19 +113,15 @@ jobs:
             while :; do
               api_url="https://api.github.com/repos/${owner}/${repo}/actions/runs/${run_id}/artifacts?per_page=100&page=${page}"
               tmp="$(mktemp)"
-              # save response body and HTTP headers (to inspect Link if needed)
               http_code=$(curl -sS -w "%{http_code}" -H "Accept: application/vnd.github+json" -H "$AUTH_HDR" "$api_url" -o "$tmp") || http_code="000"
               if [ "$http_code" != "200" ]; then
                 echo "  Warning: API request failed for page ${page} (http ${http_code})"
                 rm -f "$tmp"
                 break
               fi
-              # append artifacts array items to out_json as newline-delimited JSON objects
               jq -c '.artifacts[]' "$tmp" >> "$out_json"
-              # inspect Link header to see if there is a next page
               link_hdr=$(curl -sI -H "Accept: application/vnd.github+json" -H "$AUTH_HDR" "$api_url" | tr -d '\r' | sed -n 's/^Link: //Ip' || true)
               rm -f "$tmp"
-              # if link_hdr contains rel="next" continue, else break
               if echo "$link_hdr" | grep -q 'rel="next"'; then
                 page=$((page+1))
                 continue
@@ -178,6 +174,70 @@ jobs:
                       echo "   -> extracted ${dest}"
                   done
                 rm -rf "$tmpd"
+          
+                # --- post-process: keep newest 3 per runId, move older to docs/data/older ---
+                docs_data="${docs_data%/}"
+                older_dir="${docs_data}/older"
+                mkdir -p "$older_dir"
+          
+                # optional normalization: if filename contains '__' remove prefix up to '__' when safe
+                for ff in "${docs_data}"/*__agg_*.json; do
+                  [ -e "$ff" ] || continue
+                  bn=$(basename "$ff")
+                  newname=$(echo "$bn" | sed -E 's/^.*__//')
+                  if [ -n "$newname" ] && [ ! -e "${docs_data}/${newname}" ]; then
+                    mv -f "$ff" "${docs_data}/${newname}"
+                  fi
+                done
+          
+                # collect files per runId (prefix before first '-')
+                shopt -s nullglob
+                declare -A seen_runs
+                for ff in "${docs_data}"/*; do
+                  [ -f "$ff" ] || continue
+                  bn=$(basename "$ff")
+                  if [[ "$bn" =~ ^([0-9]+)- ]]; then
+                    run="${BASH_REMATCH[1]}"
+                    echo "$ff" >> "/tmp/__docs_files_for_run_${run}.lst"
+                    seen_runs["$run"]=1
+                  fi
+                done
+          
+                for run in "${!seen_runs[@]}"; do
+                  list="/tmp/__docs_files_for_run_${run}.lst"
+                  if [ -f "$list" ]; then
+                    mapfile -t sorted < <(xargs -d '\n' -a "$list" -I{} stat -c '%Y %n' {} 2>/dev/null | sort -rn | awk '{ $1=""; sub(/^ /,""); print $0 }')
+                    idx=0
+                    for file in "${sorted[@]}"; do
+                      idx=$((idx+1))
+                      if [ "$idx" -le 3 ]; then
+                        :
+                      else
+                        mv -f "$file" "$older_dir/" || echo "Failed to move $file"
+                      fi
+                    done
+                    rm -f "$list"
+                  fi
+                done
+          
+                # for files without runId prefix, keep only latest per pattern
+                for pattern in agg_*.json results_*.json; do
+                  files=( "${docs_data}/${pattern}" )
+                  if [ "${#files[@]}" -gt 1 ]; then
+                    mapfile -t sorted2 < <(for fff in "${files[@]}"; do [ -f "$fff" ] && printf '%s\t%s\n' "$(stat -c %Y "$fff")" "$fff"; done | sort -r -n | awk -F'\t' '{print $2}')
+                    idx=0
+                    for fff in "${sorted2[@]}"; do
+                      idx=$((idx+1))
+                      if [ "$idx" -gt 1 ]; then
+                        mv -f "$fff" "$older_dir/" || echo "Failed to move $fff"
+                      fi
+                    done
+                  fi
+                done
+          
+                rm -f /tmp/__docs_files_for_run_*.lst 2>/dev/null || true
+                echo "Post-process: kept newest 3 per runId in ${docs_data}, older moved to ${older_dir}."
+          
               else
                 echo "  Warning: artifact $out not a valid zip or empty"
               fi
