@@ -36,52 +36,21 @@ jobs:
         run: |
           mkdir -p .github/scripts
           cat > .github/scripts/fetch_page.js <<'NODEJS'
-          const puppeteer = require('puppeteer-core');
-          const chromium = require('chrome-aws-lambda'); // fallback for AWS chromium binary
+          const puppeteer = require('puppeteer');
           const fs = require('fs');
           (async () => {
             const url = process.argv[2];
             const out = process.argv[3] || '/tmp/im_public.html';
             if (!url) { console.error('Missing url'); process.exit(2); }
-            // launch chrome from system if available, else chromium
-            const launchOpts = {
-              args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage'],
-              headless: true
-            };
-            try {
-              // try system chrome
-              const browser = await puppeteer.launch(launchOpts);
-              const page = await browser.newPage();
-              await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
-              await page.waitForTimeout(1000);
-              const html = await page.content();
-              fs.writeFileSync(out, html);
-              await browser.close();
-              console.log('Saved rendered page to', out);
-              process.exit(0);
-            } catch (e) {
-              // fallback to chrome-aws-lambda bundled chromium
-              try {
-                const browser = await chromium.puppeteer.launch({
-                  args: chromium.args.concat(['--no-sandbox','--disable-setuid-sandbox']),
-                  defaultViewport: chromium.defaultViewport,
-                  executablePath: await chromium.executablePath,
-                  headless: chromium.headless,
-                });
-                const page = await browser.newPage();
-                await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
-                await page.waitForTimeout(1000);
-                const html = await page.content();
-                fs.writeFileSync(out, html);
-                await browser.close();
-                console.log('Saved rendered page (aws-chromium) to', out);
-                process.exit(0);
-              } catch (err) {
-                console.error('Puppeteer both attempts failed:', err);
-                process.exit(3);
-              }
-            }
-          })();
+            const browser = await puppeteer.launch({ args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage'], headless: true });
+            const page = await browser.newPage();
+            await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+            await page.waitForTimeout(1000);
+            const html = await page.content();
+            fs.writeFileSync(out, html);
+            await browser.close();
+            console.log('Saved rendered page to', out);
+          })().catch(e => { console.error(e); process.exit(1); });
           NODEJS
 
           cat > .github/scripts/parse_runs.sh <<'SH'
@@ -89,19 +58,16 @@ jobs:
           set -euo pipefail
           infile="$1"
           out="$2"
-          # Extract github run links (absolute and relative)
           grep -Eo 'https?://github.com/[^/]+/[^/]+/actions/runs/[0-9]+' "$infile" > "${out}.abs" || true
           grep -Eo '/[^/]+/[^/]+/actions/runs/[0-9]+' "$infile" | sed 's|^|https://github.com|' >> "${out}.abs" || true
           sort -u "${out}.abs" > "$out" || true
-          # optionally limit to first 3
-          # head -n 3 "$out" > "${out}.head"; mv "${out}.head" "$out"
           echo "Parsed run list written to $out"
           SH
 
           cat > .github/scripts/download_artifacts.sh <<'SH'
           #!/usr/bin/env bash
           set -euo pipefail
-          runs_file="$1"        # file with one run URL per line
+          runs_file="$1"
           artifacts_dir="$2"
           docs_data="$3"
           secret_pat="$4"
@@ -190,11 +156,10 @@ jobs:
 
           chmod +x .github/scripts/*.sh
 
-      - name: Install node deps (puppeteer + chrome-aws-lambda)
+      - name: Install node deps (puppeteer)
         run: |
           npm init -y
-          npm i puppeteer-core chrome-aws-lambda --no-audit --no-fund
-          # ensure local chromium available on runner; puppeteer-core will try system Chrome first
+          npm i puppeteer --no-audit --no-fund
 
       - name: Render public page with Puppeteer
         env:
