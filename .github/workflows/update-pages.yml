@@ -172,90 +172,77 @@ jobs:
                       echo "   -> extracted ${dest}"
                   done
                 rm -rf "$tmpd"
-                # --- post-process: keep one per (runId, subtype) and only for newest runId per subtype ---
+
+                # --- post-process: keep one best prefixed file per subtype, move other prefixed files to older, delete non-prefixed ---
                 docs_data="${docs_data%/}"
                 older_dir="${docs_data}/older"
                 mkdir -p "$older_dir"
 
-                # optional normalization left as-is (unchanged)
-                for ff in "${docs_data}"/*__agg_*.json; do
-                  [ -e "$ff" ] || continue
-                  bn=$(basename "$ff")
-                  newname=$(echo "$bn" | sed -E 's/^.*__//')
-                  if [ -n "$newname" ] && [ ! -e "${docs_data}/${newname}" ]; then
-                    mv -f "$ff" "${docs_data}/${newname}"
+                # helper: parse prefixed filenames "run-artid-name..."
+                parse_prefixed() {
+                  local bn="$1"
+                  if [[ "$bn" =~ ^([0-9]+)-([0-9]+)-(.+)$ ]]; then
+                    printf '%s\t%s\t%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+                    return 0
                   fi
-                done
+                  return 1
+                }
 
-                # Build best file per (subtype, run): best = highest artifact-id (number after first '-')
-                declare -A best_for_run   # key = "${subtype}::${runId}" -> filepath
-                declare -A best_artid     # key = "${subtype}::${runId}" -> artifact_id
-                declare -A seen_subtypes
+                declare -A best_for_subtype
+                declare -A best_run
+                declare -A best_artid
+                non_prefixed_files=()
 
-                for ff in "${docs_data}"/*; do
+                # 1) choose best per subtype
+                for ff in "$docs_data"/*; do
                   [ -f "$ff" ] || continue
                   bn=$(basename "$ff")
-                  if [[ "$bn" =~ ^([0-9]+)-([0-9]+)-(.+)$ ]]; then
-                    run="${BASH_REMATCH[1]}"
-                    artid="${BASH_REMATCH[2]}"
-                    rest="${BASH_REMATCH[3]}"
-                    subtype=$(printf '%s' "$rest" | sed -E 's/__.*$//' | sed -E 's/\.[^.]+$//')
-                    key="${subtype}::${run}"
-                    seen_subtypes["$subtype"]=1
-                    prev="${best_artid[$key]:-0}"
-                    if [ "$artid" -gt "$prev" ]; then
-                      best_artid[$key]="$artid"
-                      best_for_run[$key]="$ff"
+                  if parsed=$(parse_prefixed "$bn" 2>/dev/null); then
+                    IFS=$'\t' read -r run artid namepart <<< "$parsed"
+                    subtype=$(printf '%s' "$namepart" | sed -E 's/__agg_.*$//' | sed -E 's/\.[^.]+$//')
+                    run=${run:-0}; artid=${artid:-0}
+                    prev_run=${best_run[$subtype]:--1}
+                    prev_art=${best_artid[$subtype]:-0}
+                    if (( run > prev_run )) || { (( run == prev_run )) && (( artid > prev_art )); }; then
+                      best_run[$subtype]="$run"
+                      best_artid[$subtype]="$artid"
+                      best_for_subtype[$subtype]="$ff"
                     fi
                   else
-                    # non-matching filenames: bucket under subtype "other" with run "0"
-                    subtype="other"
-                    run="0"
-                    key="${subtype}::${run}"
-                    seen_subtypes["$subtype"]=1
-                    if [ -z "${best_for_run[$key]:-}" ]; then
-                      best_artid[$key]=0
-                      best_for_run[$key]="$ff"
+                    non_prefixed_files+=("$ff")
+                  fi
+                done
+
+                # 2) move prefixed files that are not the chosen best to older
+                for ff in "$docs_data"/*; do
+                  [ -f "$ff" ] || continue
+                  bn=$(basename "$ff")
+                  if parse_prefixed "$bn" >/dev/null 2>&1; then
+                    keep_this=0
+                    for s in "${!best_for_subtype[@]}"; do
+                      [ "${best_for_subtype[$s]}" = "$ff" ] && keep_this=1 && break
+                    done
+                    if [ "$keep_this" -eq 1 ]; then
+                      echo "Keeping prefixed file: ${bn}"
+                    else
+                      echo "Moving older prefixed file: ${bn} -> ${older_dir}/"
+                      mv -f "$ff" "${older_dir}/" || echo " Failed to move $ff"
                     fi
                   fi
                 done
 
-                # For each subtype keep only the best file of the highest runId; move all other best files to older
-                for subtype in "${!seen_subtypes[@]}"; do
-                  runids=()
-                  for k in "${!best_for_run[@]}"; do
-                    IFS='::' read -r sk run <<< "$k"
-                    [ "$sk" = "$subtype" ] && runids+=("$run")
-                  done
-                  [ "${#runids[@]}" -gt 0 ] || continue
-
-                  # find numeric max runId
-                  max_run=-1
-                  for r in "${runids[@]}"; do
-                    if [ "$r" -eq "$r" ] 2>/dev/null; then
-                      [ "$r" -gt "$max_run" ] && max_run="$r"
-                    fi
-                  done
-
-                  keep_key="${subtype}::${max_run}"
-                  keep_file="${best_for_run[$keep_key]:-}"
-
-                  for k in "${!best_for_run[@]}"; do
-                    IFS='::' read -r sk run <<< "$k"
-                    [ "$sk" = "$subtype" ] || continue
-                    fpath="${best_for_run[$k]}"
-                    [ -n "$fpath" ] || continue
-                    if [ "$k" = "$keep_key" ]; then
-                      echo "Keeping for subtype ${subtype}: $(basename "$fpath")"
-                    else
-                      echo "Moving older for subtype ${subtype}: $(basename "$fpath") -> ${older_dir}/"
-                      mv -f "$fpath" "${older_dir}/" || echo " Failed to move $fpath"
-                    fi
-                  done
+                # 3) delete all non-prefixed files (assumed spurious)
+                for ff in "${non_prefixed_files[@]:-}"; do
+                  [ -f "$ff" ] || continue
+                  bn=$(basename "$ff")
+                  echo "Deleting non-prefixed file: ${bn}"
+                  rm -f "$ff" || echo " Failed to delete $ff"
                 done
 
-                rm -f /tmp/__docs_files_for_run_*.lst 2>/dev/null || true
-                echo "Post-process: kept one file per (runId,subtype) for newest runId per subtype. Older moved to ${older_dir}."
+                echo "Post-process complete. Kept files:"
+                for s in "${!best_for_subtype[@]}"; do
+                  echo "  - $(basename "${best_for_subtype[$s]}")"
+                done
 
               else
                 echo "  Warning: artifact $out not a valid zip or empty"
