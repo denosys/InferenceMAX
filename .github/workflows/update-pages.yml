@@ -26,6 +26,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y jq unzip curl ca-certificates fonts-liberation
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -102,7 +103,7 @@ jobs:
             return 1
           }
           AUTH_HDR="Authorization: token ${secret_pat}"
-          
+
           fetch_all_artifacts_for_run() {
             local owner="$1" repo="$2" run_id="$3" out_json="$4"
             : > "$out_json"
@@ -127,7 +128,7 @@ jobs:
               fi
             done
           }
-          
+
           while IFS= read -r run_url || [ -n "$run_url" ]; do
             [ -z "$run_url" ] && continue
             owner=$(echo "$run_url" | awk -F'/' '{print $4}')
@@ -175,7 +176,7 @@ jobs:
                 docs_data="${docs_data%/}"
                 older_dir="${docs_data}/older"
                 mkdir -p "$older_dir"
-                
+
                 # optional normalization left as-is (unchanged)
                 for ff in "${docs_data}"/*__agg_*.json; do
                   [ -e "$ff" ] || continue
@@ -185,12 +186,12 @@ jobs:
                     mv -f "$ff" "${docs_data}/${newname}"
                   fi
                 done
-                
+
                 # Build best file per (subtype, run): best = highest artifact-id (number after first '-')
                 declare -A best_for_run   # key = "${subtype}::${runId}" -> filepath
                 declare -A best_artid     # key = "${subtype}::${runId}" -> artifact_id
                 declare -A seen_subtypes
-                
+
                 for ff in "${docs_data}"/*; do
                   [ -f "$ff" ] || continue
                   bn=$(basename "$ff")
@@ -218,7 +219,7 @@ jobs:
                     fi
                   fi
                 done
-                
+
                 # For each subtype keep only the best file of the highest runId; move all other best files to older
                 for subtype in "${!seen_subtypes[@]}"; do
                   runids=()
@@ -227,7 +228,7 @@ jobs:
                     [ "$sk" = "$subtype" ] && runids+=("$run")
                   done
                   [ "${#runids[@]}" -gt 0 ] || continue
-                
+
                   # find numeric max runId
                   max_run=-1
                   for r in "${runids[@]}"; do
@@ -235,10 +236,10 @@ jobs:
                       [ "$r" -gt "$max_run" ] && max_run="$r"
                     fi
                   done
-                
+
                   keep_key="${subtype}::${max_run}"
                   keep_file="${best_for_run[$keep_key]:-}"
-                
+
                   for k in "${!best_for_run[@]}"; do
                     IFS='::' read -r sk run <<< "$k"
                     [ "$sk" = "$subtype" ] || continue
@@ -252,7 +253,7 @@ jobs:
                     fi
                   done
                 done
-                
+
                 rm -f /tmp/__docs_files_for_run_*.lst 2>/dev/null || true
                 echo "Post-process: kept one file per (runId,subtype) for newest runId per subtype. Older moved to ${older_dir}."
 
@@ -265,21 +266,25 @@ jobs:
           ls -la "${docs_data}" || true
           SH
           chmod +x .github/scripts/*.sh
+
       - name: Install node deps (puppeteer)
         run: |
           npm init -y
           npm i puppeteer --no-audit --no-fund
+
       - name: Render public page with Puppeteer
         env:
           PUBLIC_PAGE: ${{ env.PUBLIC_PAGE }}
         run: |
           node .github/scripts/fetch_page.js "${PUBLIC_PAGE}" /tmp/im_public.html
           ls -la /tmp/im_public.html
+
       - name: Parse run links from rendered page
         run: |
           .github/scripts/parse_runs.sh /tmp/im_public.html /tmp/im_runs/list.txt
           echo "Run links:"
           cat /tmp/im_runs/list.txt || true
+
       - name: Download allowed artifacts from runs
         env:
           SECRET_PAT: ${{ env.SECRET_PAT }}
@@ -287,6 +292,7 @@ jobs:
           DOCS_DATA: ${{ env.DOCS_DATA }}
         run: |
           .github/scripts/download_artifacts.sh /tmp/im_runs/list.txt "${ARTIFACTS_DIR}" "${DOCS_DATA}" "${SECRET_PAT}"
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
@@ -302,6 +308,7 @@ jobs:
           python3 -u generate_html.py || true
           find docs -maxdepth 2 -type f -print || true
           ls -la docs/data || true
+
       - name: Commit and push generated site
         run: |
           set -euo pipefail
