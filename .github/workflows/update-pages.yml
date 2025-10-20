@@ -88,27 +88,27 @@ jobs:
           #!/usr/bin/env bash
           set -euo pipefail
           # Usage: download_artifacts.sh <runs_file> <artifacts_dir> <docs_data> <secret_pat> <out_dir>
+          
           runs_file="${1:-}"
           artifacts_dir="${2:-}"
           docs_data="${3:-}"
           secret_pat="${4:-}"
           out_dir="${5:-}"
-
+          
           if [ -z "$runs_file" ] || [ -z "$artifacts_dir" ] || [ -z "$docs_data" ] || [ -z "$secret_pat" ]; then
             echo "Usage: $0 <runs_file> <artifacts_dir> <docs_data> <secret_pat> [out_dir]"
             exit 2
           fi
-
-          # Normalize outs
+          
           artifacts_dir="${artifacts_dir%/}"
           docs_data="${docs_data%/}"
           out_dir="${out_dir%/}"
-
+          
           mkdir -p "$artifacts_dir" "$docs_data" /tmp/im_runs
           if [ -n "$out_dir" ]; then
             mkdir -p "$out_dir"
           fi
-
+          
           read -r -d '' ALLOWED <<'EOT' || true
           results_gptoss_1k1k.zip
           results_gptoss_8k1k.zip
@@ -120,7 +120,7 @@ jobs:
           results_dsr1_8k1k.zip
           results_dsr1_1k8k.zip
           EOT
-
+          
           is_allowed() {
             local name="$1"
             while IFS= read -r line; do
@@ -128,9 +128,9 @@ jobs:
             done <<< "$ALLOWED"
             return 1
           }
-
+          
           AUTH_HDR="Authorization: token ${secret_pat}"
-
+          
           fetch_all_artifacts_for_run() {
             local owner="$1" repo="$2" run_id="$3" out_json="$4"
             : > "$out_json"
@@ -155,8 +155,12 @@ jobs:
               fi
             done
           }
-
-          # MAIN loop
+          
+          # temp root for all extractions
+          tmp_root="$(mktemp -d)"
+          trap 'rm -rf "${tmp_root}"' EXIT
+          
+          # MAIN loop: download artifacts and extract into per-run/artifact temp dirs
           while IFS= read -r run_url || [ -n "$run_url" ]; do
             [ -z "$run_url" ] && continue
             owner=$(echo "$run_url" | awk -F'/' '{print $4}')
@@ -190,34 +194,38 @@ jobs:
                 continue
               fi
               if [ -s "$out" ] && unzip -t "$out" >/dev/null 2>&1; then
-                tmpd=$(mktemp -d)
+                # create a dedicated temp dir for this run+artifact and extract there
+                tmpd="$(mktemp -d "${tmp_root}/run_${run_id}_art_${art_id}_XXXX")"
                 unzip -q "$out" -d "$tmpd"
-                find "$tmpd" -type f -name "agg_*.json" -o -name "*.json" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" -print0 \
+                # record mapping of extracted files to their source (run/artid) by prefixing filenames
+                find "$tmpd" -type f $ -name "agg_*.json" -o -name "*.json" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" $ -print0 \
                   | while IFS= read -r -d '' f; do
-                      dest=$(basename "$f" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
-                      cp -f "$f" "${docs_data}/${dest}"
-                      echo "   -> extracted ${dest} to ${docs_data}/"
+                      # keep original basename but prefix with run-artid- so parse_prefixed sees it
+                      dest_basename="$(basename "$f" | sed -E 's/[^A-Za-z0-9._-]+/_/g')"
+                      prefixed_name="${run_id}-${art_id}-${dest_basename}"
+                      mv -f "$f" "${tmpd}/${prefixed_name}"
+                      echo "   -> extracted ${prefixed_name} to ${tmpd}/"
                   done
-                rm -rf "$tmpd"
+                # leave tmpd in tmp_root; we'll select best files across all tmpd later
               else
                 echo "  Warning: artifact $out not a valid zip or empty"
               fi
             done < "$tmp_art"
           done < "$runs_file"
-
-          # GLOBAL post-process (conservative behavior)
-          docs_data="${docs_data%/}"
-          older_dir="${out_dir:-}${out_dir:+/}older"
-          mkdir -p "$older_dir"
-          echo "Docs data: $docs_data"
-          echo "Older dir: $older_dir"
-          # Build stable list of files
-          mapfile -t allfiles < <(find "$docs_data" -maxdepth 1 -type f -printf '%P\n' | sort)
+          
+          # Now global post-process on files inside tmp_root (not yet copied to docs_data)
+          echo "Docs data (target): $docs_data"
+          echo "Temp root with extracted files: $tmp_root"
+          
+          # Build stable list of files from tmp_root and existing docs_data (we want to consider both)
+          mapfile -t tmpfiles < <(find "$tmp_root" -type f -printf '%P\n' | sort)
+          mapfile -t existingfiles < <(find "$docs_data" -maxdepth 1 -type f -printf '%P\n' | sort)
+          
           declare -A best_for_subtype
           declare -A best_run
           declare -A best_artid
-          non_prefixed_files=()
-
+          declare -A best_path
+          
           parse_prefixed() {
             local bn="$1"
             if [[ "$bn" =~ ^([0-9]+)-([0-9]+)-(.+)$ ]]; then
@@ -226,10 +234,19 @@ jobs:
             fi
             return 1
           }
-
-          for bn in "${allfiles[@]}"; do
-            f="${docs_data}/${bn}"
-            if parsed=$(parse_prefixed "$bn" 2>/dev/null); then
+          
+          # Helper: consider a candidate file (path relative to either tmp_root or docs_data)
+          consider_candidate() {
+            local relpath="$1"
+            local src_type="$2" # "tmp" or "existing"
+            local fullpath
+            if [ "$src_type" = "tmp" ]; then
+              fullpath="${tmp_root}/${relpath}"
+            else
+              fullpath="${docs_data}/${relpath}"
+            fi
+          
+            if parsed=$(parse_prefixed "$(basename "$relpath")" 2>/dev/null); then
               IFS=$'\t' read -r run artid namepart <<< "$parsed"
               subtype=$(printf '%s' "$namepart" | sed -E 's/__agg_.*$//' | sed -E 's/\.[^.]+$//')
               run=${run:-0}; artid=${artid:-0}
@@ -238,15 +255,32 @@ jobs:
               if (( run > prev_run )) || { (( run == prev_run )) && (( artid > prev_art )); }; then
                 best_run[$subtype]="$run"
                 best_artid[$subtype]="$artid"
-                best_for_subtype[$subtype]="$f"
+                best_for_subtype[$subtype]="$fullpath"
+                best_path[$subtype]="$relpath"
               fi
             else
-              non_prefixed_files+=("$f")
+              # non-prefixed existing files should be considered diagnostics-only; prefer to delete them later
+              :
             fi
+          }
+          
+          # Consider existing files in docs_data first (they may be best)
+          for bn in "${existingfiles[@]}"; do
+            consider_candidate "$bn" "existing"
           done
-
-          # Move older prefixed files (keep best)
-          for bn in "${allfiles[@]}"; do
+          
+          # Consider extracted temp files
+          for bn in "${tmpfiles[@]}"; do
+            consider_candidate "$bn" "tmp"
+          done
+          
+          # Ensure older dir exists
+          older_dir="${out_dir:-}${out_dir:+/}older"
+          mkdir -p "$older_dir"
+          
+          # Move older prefixed files from docs_data to older_dir (keep best)
+          # (existing prefixed files)
+          for bn in "${existingfiles[@]}"; do
             f="${docs_data}/${bn}"
             if parse_prefixed "$bn" >/dev/null 2>&1; then
               keep_this=0
@@ -254,25 +288,48 @@ jobs:
                 [ "${best_for_subtype[$s]}" = "$f" ] && keep_this=1 && break
               done
               if [ "$keep_this" -eq 1 ]; then
-                echo "Keeping prefixed file: ${bn}"
+                echo "Keeping prefixed existing file: ${bn}"
               else
-                echo "Moving older prefixed file: ${bn} -> ${older_dir}/"
+                echo "Moving older prefixed existing file: ${bn} -> ${older_dir}/"
                 mv -v "$f" "${older_dir}/" || echo " Failed to move $f"
               fi
             fi
           done
-
-          # Delete non-prefixed files (conservative: list them in diagnostics before deleting)
+          
+          # Copy best files from tmp_root into docs_data (overwrite only if it's the chosen best)
+          for s in "${!best_for_subtype[@]}"; do
+            src="${best_for_subtype[$s]}"
+            rel="${best_path[$s]}"
+            # If source is inside tmp_root, copy it; if it's already the existing docs_data file, skip
+            if [[ "$src" == "${tmp_root}"* ]]; then
+              dest_basename="$(basename "$rel")"
+              dest_path="${docs_data}/${dest_basename}"
+              echo "Copying best file for subtype '${s}': $(basename "$src") -> ${dest_path}"
+              cp -f "$src" "$dest_path"
+            else
+              echo "Best file for subtype '${s}' already present: $(basename "$src")"
+            fi
+          done
+          
+          # Delete non-prefixed files in docs_data (conservative: list them then delete)
+          non_prefixed_files=()
+          for f in "${existingfiles[@]:-}"; do
+            if ! parse_prefixed "$f" >/dev/null 2>&1; then
+              non_prefixed_files+=("${docs_data}/${f}")
+            fi
+          done
+          
           for f in "${non_prefixed_files[@]:-}"; do
             bn=$(basename "$f")
             echo "Deleting non-prefixed file: ${bn}"
             rm -f "$f" || echo " Failed to delete $f"
           done
-
+          
           echo "Global post-process complete. Kept files:"
           for s in "${!best_for_subtype[@]}"; do
             echo "  - $(basename "${best_for_subtype[$s]}")"
           done
+
           SH
           chmod +x .github/scripts/*.sh
 
