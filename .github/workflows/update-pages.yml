@@ -425,6 +425,4 @@ jobs:
           else
             git commit -m "nightly: update pages and data"
             git push origin HEAD
-          fi
-
-       
+          fi    
