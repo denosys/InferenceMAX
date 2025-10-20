@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SECRET_PAT: ${{ secrets.SECRET_PAT }}
-      PUBLIC_PAGE: https://inferencemax.semianalysis.com
+      PUBLIC_PAGE: inferencemax.semianalysis.com
       ARTIFACTS_DIR: data_zips
       DOCS_DATA: docs/data
       NODE_VERSION: "20"
@@ -83,9 +83,7 @@ jobs:
           artifacts_dir="$2"
           docs_data="$3"
           secret_pat="$4"
-
           mkdir -p "$artifacts_dir" "$docs_data" /tmp/im_runs
-
           read -r -d '' ALLOWED <<'EOT' || true
           results_gptoss_1k1k.zip
           results_gptoss_8k1k.zip
@@ -104,7 +102,6 @@ jobs:
             done <<< "$ALLOWED"
             return 1
           }
-
           AUTH_HDR="Authorization: token ${secret_pat}"
 
           fetch_all_artifacts_for_run() {
@@ -132,6 +129,7 @@ jobs:
             done
           }
 
+          # iterate runs and download/extract allowed artifacts
           while IFS= read -r run_url || [ -n "$run_url" ]; do
             [ -z "$run_url" ] && continue
             owner=$(echo "$run_url" | awk -F'/' '{print $4}')
@@ -145,7 +143,7 @@ jobs:
               echo " No artifacts for run $run_id"
               continue
             fi
-
+            # iterate items (each line is a JSON artifact)
             while IFS= read -r art; do
               art_id=$(echo "$art" | jq -r '.id')
               art_name=$(echo "$art" | jq -r '.name')
@@ -160,20 +158,19 @@ jobs:
               out="${artifacts_dir}/${safe_name}.zip"
               echo " Downloading artifact $art_name from run $run_id"
               http_code=$(curl -sSL -w "%{http_code}" -H "Accept: application/vnd.github+json" -H "$AUTH_HDR" -o "$out" "$archive_url" || echo "000")
-              if [[ "$http_code" != "200" && "$http_code" != "302" && "$http_code" != "307" ]]; then
+              if [ "$http_code" != "200" ] && [ "$http_code" != "302" ] && [ "$http_code" != "307" ]; then
                 echo "  Warning: failed to download artifact $art_id (http $http_code)"
                 rm -f "$out" || true
                 continue
               fi
-
-              if [[ -s "$out" ]] && unzip -t "$out" >/dev/null 2>&1; then
+              if [ -s "$out" ] && unzip -t "$out" >/dev/null 2>&1; then
                 tmpd=$(mktemp -d)
                 unzip -q "$out" -d "$tmpd"
-                find "$tmpd" -type f $ -name "agg_*.json" -o -name "*.json" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" $ -print0 |
-                  while IFS= read -r -d '' f; do
-                    dest=$(basename "$f" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
-                    cp -f "$f" "${docs_data}/${dest}"
-                    echo "   -> extracted ${dest}"
+                find "$tmpd" -type f -name "agg_*.json" -o -name "*.json" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" -print0 \
+                  | while IFS= read -r -d '' f; do
+                      dest=$(basename "$f" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
+                      cp -f "$f" "${docs_data}/${dest}"
+                      echo "   -> extracted ${dest}"
                   done
                 rm -rf "$tmpd"
               else
@@ -181,103 +178,97 @@ jobs:
               fi
             done < "$tmp_art"
           done < "$runs_file"
-
+          
+          # ----------------------------------------------------------------------
+          # 3️⃣  Global post‑process (run once after all runs processed)
+          # ----------------------------------------------------------------------
+          docs_data="${docs_data%/}"
+          older_dir="${docs_data}/older"
+          mkdir -p "$older_dir"
+          
           # --------------------------------------------------------------
-          #  🧹  CLEAN‑UP – keep the newest file for each “subtype”
+          # Helper: parse a prefixed filename
+          # Expected format: <run-id>-<artifact-id>-<original-name>
+          # Returns: run-id<TAB>artifact-id<TAB>original-name
           # --------------------------------------------------------------
-          
-          # Files that must never be removed (add more names if needed)
-          KEEP_ALWAYS=("data_index.json")
-          
-          DOCS_DATA="${docs_data%/}"
-          OLDER_DIR="${DOCS_DATA}/older"
-          mkdir -p "$OLDER_DIR"
-          
-          # -----------------------------------------------------------------
-          # Helper: split a prefixed filename into run‑id, artifact‑id and subtype
-          #   <run‑id>-<artifact‑id>-<something>.<ext>
-          #   subtype = <something> without any “__agg_…” suffix or extension
-          # -----------------------------------------------------------------
           parse_prefixed() {
-            local fn="$1"
-            [[ "$fn" =~ ^([0-9]+)-([0-9]+)-(.+)$ ]] || return 1
-            printf '%s\t%s\t%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+            local bn="$1"
+            if [[ "$bn" =~ ^([0-9]+)-([0-9]+)-(.+)$ ]]; then
+              printf '%s\t%s\t%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+              return 0
+            fi
+            return 1
           }
           
-          # -----------------------------------------------------------------
-          # Scan the directory once and remember the newest file for each subtype
-          # -----------------------------------------------------------------
-          declare -A best_file   # subtype → full path of newest file
-          declare -A best_run    # subtype → run‑id (numeric)
-          declare -A best_art    # subtype → artifact‑id (numeric)
+          # --------------------------------------------------------------
+          # Data structures that will hold the “best” file for each subtype
+          # --------------------------------------------------------------
+          declare -A best_file   # key = normalized subtype, value = full path to file to keep
+          declare -A best_run    # run‑id of the best file for the subtype
+          declare -A best_art    # artifact‑id of the best file for the subtype
           
-          while IFS= read -r -d '' f; do
-            bn=$(basename "$f")
+          # --------------------------------------------------------------
+          # Build a stable, sorted list of every file that currently lives in docs/data
+          # --------------------------------------------------------------
+          mapfile -t all_files < <(find "$docs_data" -maxdepth 1 -type f -printf '%P\n' | sort)
           
-            # -----------------------------------------------------------------
-            # Skip files that must be kept unchanged
-            # -----------------------------------------------------------------
-            for keep in "${KEEP_ALWAYS[@]}"; do
-              [[ "$bn" == "$keep" ]] && continue 2
-            done
-          
-            # -----------------------------------------------------------------
-            # If the file has the expected prefix, decide whether it is the newest
-            # -----------------------------------------------------------------
+          # --------------------------------------------------------------
+          # 4️⃣  Determine the newest file for each subtype
+          # --------------------------------------------------------------
+          for bn in "${all_files[@]}"; do
             if parsed=$(parse_prefixed "$bn"); then
-              IFS=$'\t' read -r run art subtype <<< "$parsed"
-              # Normalise subtype (remove possible __agg_… suffix and file extension)
-              subtype=$(printf '%s' "$subtype" | sed -E 's/__agg_.*$//' | sed -E 's/\.[^.]+$//')
+              IFS=$'\t' read -r run_id art_id namepart <<< "$parsed"
           
-              # Update the “best” entry for this subtype
-              if [[ -z "${best_run[$subtype]+x}" ]] ||
-                 (( run > best_run[$subtype] )) ||
-                 { (( run == best_run[$subtype] )) && (( art > best_art[$subtype] )); }; then
-                best_run[$subtype]="$run"
-                best_art[$subtype]="$art"
-                best_file[$subtype]="$f"
+              # ---- Normalise the subtype ----
+              #   1. Remove the "__agg_…" suffix (if present)
+              #   2. Strip the leading "results_" prefix
+              #   3. Drop the ".json" extension
+              subtype=$(printf '%s' "$namepart" |
+                        sed -E 's/__agg_.*$//' |
+                        sed -E 's/^results_//' |
+                        sed -E 's/\.json$//')
+          
+              # ---- Keep the file with the highest run‑id, or if equal the highest artifact‑id ----
+              if [[ -z "${best_file[$subtype]+x}" ]] ||
+                 (( run_id > ${best_run[$subtype]:-0} )) ||
+                 { (( run_id == ${best_run[$subtype]:-0} )) && (( art_id > ${best_art[$subtype]:-0} )); }; then
+                best_run[$subtype]="$run_id"
+                best_art[$subtype]="$art_id"
+                best_file[$subtype]="${docs_data}/${bn}"
+              fi
+            fi
+          done
+          
+          # --------------------------------------------------------------
+          # 5️⃣  Move or delete files based on the selection above
+          # --------------------------------------------------------------
+          for bn in "${all_files[@]}"; do
+            f="${docs_data}/${bn}"
+            if parsed=$(parse_prefixed "$bn"); then
+              # This is a prefixed file – keep only the one stored in best_file
+              if [[ "$f" == "${best_file[$(printf '%s' "$bn" |
+                          sed -E 's/^results_//' |
+                          sed -E 's/__agg_.*$//' |
+                          sed -E 's/\.json$//')]}" ]]; then
+                echo "✅ Keeping: $bn"
+              else
+                echo "📦 Moving older file: $bn → older/"
+                mv -t "$older_dir" "$f"
               fi
             else
-              # Non‑prefixed files will be deleted later (unless in KEEP_ALWAYS)
-              :
+              # Not a prefixed file – delete it
+              echo "🗑️ Deleting non‑prefixed file: $bn"
+              rm -f "$f"
             fi
-          done < <(find "$DOCS_DATA" -maxdepth 1 -type f -print0)
+          done
           
-          # -----------------------------------------------------------------
-          # Move every prefixed file that is NOT the newest into the “older” folder
-          # -----------------------------------------------------------------
-          while IFS= read -r -d '' f; do
-            bn=$(basename "$f")
-            if parsed=$(parse_prefixed "$bn"); then
-              IFS=$'\t' read -r _ _ subtype <<< "$parsed"
-              subtype=$(printf '%s' "$subtype" | sed -E 's/__agg_.*$//' | sed -E 's/\.[^.]+$//')
-              if [[ "${best_file[$subtype]}" != "$f" ]]; then
-                echo "Moving older file: $bn → older/"
-                mv -n "$f" "$OLDER_DIR/" || echo "⚠️  Failed to move $bn"
-              else
-                echo "Keeping newest file for subtype '$subtype': $bn"
-              fi
-            fi
-          done < <(find "$DOCS_DATA" -maxdepth 1 -type f -print0)
-          
-          # -----------------------------------------------------------------
-          # Delete every non‑prefixed file that isn’t explicitly kept
-          # -----------------------------------------------------------------
-          while IFS= read -r -d '' f; do
-            bn=$(basename "$f")
-            skip=0
-            for keep in "${KEEP_ALWAYS[@]}"; do
-              [[ "$bn" == "$keep" ]] && skip=1 && break
-            done
-            (( skip )) && continue
-            echo "Deleting stale file: $bn"
-            rm -f "$f"
-          done < <(find "$DOCS_DATA" -maxdepth 1 -type f -print0)
-          
-          echo "Clean‑up finished. Final contents of ${DOCS_DATA}:"
-          ls -1 "${DOCS_DATA}"
-          
-
+          # --------------------------------------------------------------
+          # 6️⃣  Summary of what was kept
+          # --------------------------------------------------------------
+          echo "🔚 Post‑process complete. Files kept:"
+          for subtype in "${!best_file[@]}"; do
+            echo "  - $(basename "${best_file[$subtype]}")"
+          done
           
           SH
           chmod +x .github/scripts/*.sh
@@ -314,9 +305,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install python deps
-        run: |
-          pip install --upgrade pip
-          pip install pandas plotly
+        run: pip install --upgrade pip && pip install pandas plotly
 
       - name: Generate HTML
         run: |
@@ -339,4 +328,3 @@ jobs:
             git commit -m "nightly: update pages and data"
             git push origin HEAD
           fi
-          # Helper: extract run‑id, artifact‑id and the “subtype” part
