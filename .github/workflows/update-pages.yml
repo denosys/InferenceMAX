@@ -21,8 +21,9 @@ jobs:
       DOCS_DATA: ${{ github.workspace }}/docs/data
       SECRET_PAT: ${{ secrets.SECRET_PAT }}
       PUBLIC_PAGE: https://inferencemax.semianalysis.com
-      NODE_VERSION: ${{ env.NODE_VERSION }}
-      PYTHON_VERSION: ${{ env.PYTHON_VERSION }}
+      NODE_VERSION: "20"
+      PYTHON_VERSION: "3.11"
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
