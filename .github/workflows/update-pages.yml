@@ -16,6 +16,7 @@ jobs:
       ARTIFACTS_DIR: data_zips
       DOCS_DATA: docs/data
       NODE_VERSION: "20"
+      OUT_DIR: docs
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -277,6 +278,7 @@ jobs:
           SECRET_PAT: ${{ env.SECRET_PAT }}
           ARTIFACTS_DIR: ${{ env.ARTIFACTS_DIR }}
           DOCS_DATA: ${{ env.DOCS_DATA }}
+          OUT_DIR: ${{ env.OUT_DIR }}
         run: |
           .github/scripts/download_artifacts.sh /tmp/im_runs/list.txt "${ARTIFACTS_DIR}" "${DOCS_DATA}" "${SECRET_PAT}"
 
