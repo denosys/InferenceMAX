@@ -71,9 +71,12 @@ jobs:
           mkdir -p "$(dirname "$out")" /tmp/im_runs
           tmp_out="${out}.abs"
           : > "$tmp_out"
+          
+          # estrai tutti i link (completi o relativi)
           grep -Eo 'https?://github.com/[^/]+/[^/]+/actions/runs/[0-9]+' "$infile" >> "$tmp_out" || true
-          grep -Eo '/[^/]+/[^/]+/actions/runs/[0-9]+' "$infile" | sed 's|^|github.com|' >> "$tmp_out" || true
-          sort -u "$tmp_out" > "$out" || true
+          grep -Eo '/[^/]+/[^/]+/actions/runs/[0-9]+' "$infile" | sed 's|^|https://github.com|' >> "$tmp_out" || true
+          
+          sort -u "$tmp_out" > "$out"
           echo "Parsed run list written to $out"
           SH
           cat > .github/scripts/download_artifacts.sh <<'SH'
