@@ -140,25 +140,32 @@ def build_plotly_html(df: pd.DataFrame, data_file_names: List[str]) -> str:
     # construct client-side datasets mapping by file_key (only files matched in FILE_MAP)
     client_map = {}
     for key in FILE_MAP.keys():
-        # find file present
         match = next((n for n in data_file_names if key in n), None)
         if match:
             p = DATA_DIR / match
             j = load_json_safe(p)
             recs = normalize_records_from_json(j)
-            # normalize records same as server
             for r in recs:
                 r.setdefault("model", FILE_MAP[key][0])
                 r.setdefault("isl", FILE_MAP[key][1])
                 r.setdefault("osl", FILE_MAP[key][2])
-            # coerce numeric fields to strings where necessary for JSON
+                # normalize fields for client
+                if "tp" not in r and "cards" in r:
+                    r["tp"] = r.get("cards")
+                if "conc" not in r and "concurrent_users" in r:
+                    r["conc"] = r.get("concurrent_users")
+                if "run_id" not in r:
+                    r["run_id"] = r.get("sample_id", None)
+                if "precision" in r:
+                    try:
+                        r["precision"] = str(r["precision"]).lower()
+                    except Exception:
+                        pass
             client_map[key] = {
                 "columns": list(pd.json_normalize(recs).columns),
                 "records": recs
             }
-    # default metric choices
-    default_x = "median_e2el"
-    # start building HTML + controls
+
     header = "<!doctype html><html><head><meta charset='utf-8'><title>InferenceMAX — Interactive</title>"
     header += "<script src='https://cdn.plot.ly/plotly-latest.min.js'></script>"
     header += "<style>body{font-family:system-ui,Arial,sans-serif;margin:12px;} select{margin-right:8px;} .controls{margin-bottom:8px;}</style>"
@@ -176,9 +183,8 @@ def build_plotly_html(df: pd.DataFrame, data_file_names: List[str]) -> str:
         "</div>"
     )
     plot_div = "<div id='plot_div' style='width:100%;height:700px;'></div>"
-    # embed client data
     body_js = f"<script>const CLIENT_MAP = {json.dumps(client_map)}; const FILE_MAP = {json.dumps(FILE_MAP)};</script>"
-    # main JS to populate controls and render plot (kept concise)
+
     main_js = """
 <script>
 const modelSel = document.getElementById('model_sel');
@@ -209,7 +215,9 @@ const MODELS = buildModelsFromCLIENT();
 function populateModels(){
   modelSel.innerHTML = '';
   const seen = new Set();
-  for (const m of Object.keys(MODELS)){
+  // ensure stable order
+  const names = Object.keys(MODELS).sort();
+  for (const m of names){
     if (seen.has(m)) continue;
     seen.add(m);
     const opt = document.createElement('option'); opt.value = m; opt.text = m; modelSel.appendChild(opt);
@@ -219,9 +227,18 @@ function populateModels(){
 function populateContextsForModel(model){
   ctxSel.innerHTML = '';
   const entries = MODELS[model] || [];
+  // avoid duplicate contexts
+  const seen = new Set();
   for (const e of entries){
-    const opt = document.createElement('option'); opt.value = e[2]; opt.text = e[0] + '/' + e[1]; ctxSel.appendChild(opt);
+    const label = e[0] + '/' + e[1];
+    if (seen.has(label)) continue;
+    seen.add(label);
+    const opt = document.createElement('option'); opt.value = e[2]; opt.text = label; ctxSel.appendChild(opt);
   }
+}
+
+function updateRunInfo(key){
+  runInfo.textContent = key || '';
 }
 
 function populateYOptionsForKey(key){
@@ -264,7 +281,6 @@ function buildTraces(records, xcol, ycol, connectTp, tpFilter, precFilter){
   let recs = records.slice();
   if (precFilter && precFilter!=='all') recs = recs.filter(r=> (String(r.precision||'').toLowerCase())===String(precFilter));
   if (tpFilter && tpFilter!=='all') recs = recs.filter(r=> String(r.tp)===String(tpFilter));
-  // group by hw and series key: if connectTp -> series per (hw,tp), else per (hw,conc,run_id)
   const groups = {};
   for (const r of recs){
     const hw = (r.hw||r.hardware||'unknown').toString().toLowerCase();
@@ -275,7 +291,6 @@ function buildTraces(records, xcol, ycol, connectTp, tpFilter, precFilter){
     if (connectTp){
       seriesKey = hw + '||tp=' + tp;
     } else {
-      // each distinct (hw,conc,runId) becomes its own series so points aren't inadvertently connected across conc values
       seriesKey = hw + '||conc=' + (conc||'none') + '||run=' + (runId||'idx');
     }
     groups[seriesKey] = groups[seriesKey]||{rows:[], hw:hw, tp:tp, conc:conc};
@@ -284,7 +299,6 @@ function buildTraces(records, xcol, ycol, connectTp, tpFilter, precFilter){
   const seriesKeys = Object.keys(groups).sort();
   for (const key of seriesKeys){
     const meta = groups[key];
-    // sort rows by conc (if present) then run_id numeric if available
     meta.rows.sort((a,b)=>{
       const ca = a.conc!==undefined && a.conc!==null ? Number(a.conc) : NaN;
       const cb = b.conc!==undefined && b.conc!==null ? Number(b.conc) : NaN;
@@ -298,7 +312,6 @@ function buildTraces(records, xcol, ycol, connectTp, tpFilter, precFilter){
     const ys = meta.rows.map(r=> Number(r[ycol]));
     const nameParts = [meta.hw];
     if (meta.tp && meta.tp!=='none') nameParts.push('tp=' + meta.tp);
-    // if not connecting by tp, include conc in legend for clarity
     if (!connectTp && meta.conc) nameParts.push('conc=' + meta.conc);
     traces.push({
       x: xs,
@@ -322,7 +335,7 @@ function renderForKey(key){
   if (!xcol || !ycol){ document.getElementById('plot_div').innerHTML = '<p>Missing X or Y</p>'; return; }
   const connectTp = (tpLine.value==='yes');
   const tpFilter = tpSel.value;
-  const precFilter = precSel.value==='Tutte' ? 'all' : precSel.value.toLowerCase();
+  const precFilter = precSel.value;
   const traces = buildTraces(recs, xcol, ycol, connectTp, tpFilter, precFilter);
   const layout = {title: ycol + ' vs ' + xcol, xaxis:{title:xcol}, yaxis:{title:ycol}, legend:{orientation:'v'}};
   Plotly.newPlot('plot_div', traces, layout, {responsive:true});
@@ -343,7 +356,6 @@ if (modelSel.options.length){
   }
 }
 
-// events
 modelSel.addEventListener('change', ()=>{
   populateContextsForModel(modelSel.value);
   if (ctxSel.options.length){ ctxSel.value = ctxSel.options[0].value; updateRunInfo(ctxSel.value); populateYOptionsForKey(ctxSel.value); populateTpOptionsForKey(ctxSel.value); if (ySel.options.length) ySel.value = ySel.options[0].value; renderForKey(ctxSel.value); }
@@ -356,8 +368,10 @@ tpSel.addEventListener('change', ()=> renderForKey(ctxSel.value));
 tpLine.addEventListener('change', ()=> renderForKey(ctxSel.value));
 </script>
 """
+
     html = header + controls + plot_div + body_js + main_js + "</body></html>"
     return html
+
 
 def write_diagnostics(zip_files: List[str], files_in_data: List[str], records_count: int, sample_record: Optional[dict]):
     try:
