@@ -290,13 +290,13 @@ jobs:
       - name: Install python deps
         run: pip install --upgrade pip && pip install pandas plotly
 
-      - name: Generate HTML
-        run: |
-          set -euo pipefail
-          mkdir -p docs data_zips
-          python3 -u generate_html.py || true
-          find docs -maxdepth 2 -type f -print || true
-          ls -la docs/data || true
+    # - name: Generate HTML
+    #   run: |
+    #     set -euo pipefail
+    #     mkdir -p docs data_zips
+    #     python3 -u generate_html.py || true
+    #     find docs -maxdepth 2 -type f -print || true
+    #     ls -la docs/data || true
 
       - name: Commit and push generated site
         run: |
