@@ -7,16 +7,22 @@ on:
 permissions:
   contents: write
 
+env:
+  NODE_VERSION: "20"
+  PYTHON_VERSION: "3.11"
+
 jobs:
   build:
     runs-on: ubuntu-latest
     env:
+      # Use absolute paths based on GITHUB_WORKSPACE to avoid relative/empty-var issues
+      OUT_DIR: ${{ github.workspace }}/docs
+      ARTIFACTS_DIR: ${{ github.workspace }}/data_zips
+      DOCS_DATA: ${{ github.workspace }}/docs/data
       SECRET_PAT: ${{ secrets.SECRET_PAT }}
       PUBLIC_PAGE: https://inferencemax.semianalysis.com
-      ARTIFACTS_DIR: data_zips
-      DOCS_DATA: docs/data
-      NODE_VERSION: "20"
-      OUT_DIR: docs
+      NODE_VERSION: ${{ env.NODE_VERSION }}
+      PYTHON_VERSION: ${{ env.PYTHON_VERSION }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -33,7 +39,7 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Add puppeteer helper and scripts
+      - name: Add helper scripts
         run: |
           mkdir -p .github/scripts
           cat > .github/scripts/fetch_page.js <<'NODEJS'
@@ -72,22 +78,36 @@ jobs:
           mkdir -p "$(dirname "$out")" /tmp/im_runs
           tmp_out="${out}.abs"
           : > "$tmp_out"
-          
-          # estrai tutti i link (completi o relativi)
           grep -Eo 'https?://github.com/[^/]+/[^/]+/actions/runs/[0-9]+' "$infile" >> "$tmp_out" || true
           grep -Eo '/[^/]+/[^/]+/actions/runs/[0-9]+' "$infile" | sed 's|^|https://github.com|' >> "$tmp_out" || true
-          
           sort -u "$tmp_out" > "$out"
           echo "Parsed run list written to $out"
           SH
           cat > .github/scripts/download_artifacts.sh <<'SH'
           #!/usr/bin/env bash
           set -euo pipefail
-          runs_file="$1"
-          artifacts_dir="$2"
-          docs_data="$3"
-          secret_pat="$4"
+          # Usage: download_artifacts.sh <runs_file> <artifacts_dir> <docs_data> <secret_pat> <out_dir>
+          runs_file="${1:-}"
+          artifacts_dir="${2:-}"
+          docs_data="${3:-}"
+          secret_pat="${4:-}"
+          out_dir="${5:-}"
+
+          if [ -z "$runs_file" ] || [ -z "$artifacts_dir" ] || [ -z "$docs_data" ] || [ -z "$secret_pat" ]; then
+            echo "Usage: $0 <runs_file> <artifacts_dir> <docs_data> <secret_pat> [out_dir]"
+            exit 2
+          fi
+
+          # Normalize outs
+          artifacts_dir="${artifacts_dir%/}"
+          docs_data="${docs_data%/}"
+          out_dir="${out_dir%/}"
+
           mkdir -p "$artifacts_dir" "$docs_data" /tmp/im_runs
+          if [ -n "$out_dir" ]; then
+            mkdir -p "$out_dir"
+          fi
+
           read -r -d '' ALLOWED <<'EOT' || true
           results_gptoss_1k1k.zip
           results_gptoss_8k1k.zip
@@ -99,6 +119,7 @@ jobs:
           results_dsr1_8k1k.zip
           results_dsr1_1k8k.zip
           EOT
+
           is_allowed() {
             local name="$1"
             while IFS= read -r line; do
@@ -106,6 +127,7 @@ jobs:
             done <<< "$ALLOWED"
             return 1
           }
+
           AUTH_HDR="Authorization: token ${secret_pat}"
 
           fetch_all_artifacts_for_run() {
@@ -133,7 +155,7 @@ jobs:
             done
           }
 
-          # iterate runs and download/extract allowed artifacts
+          # MAIN loop
           while IFS= read -r run_url || [ -n "$run_url" ]; do
             [ -z "$run_url" ] && continue
             owner=$(echo "$run_url" | awk -F'/' '{print $4}')
@@ -147,7 +169,6 @@ jobs:
               echo " No artifacts for run $run_id"
               continue
             fi
-            # iterate items (each line is a JSON artifact)
             while IFS= read -r art; do
               art_id=$(echo "$art" | jq -r '.id')
               art_name=$(echo "$art" | jq -r '.name')
@@ -160,7 +181,7 @@ jobs:
               archive_url=$(echo "$art" | jq -r '.archive_download_url')
               safe_name="${run_id}-${art_id}-${art_name}"
               out="${artifacts_dir}/${safe_name}.zip"
-              echo " Downloading artifact $art_name from run $run_id"
+              echo " Downloading artifact $art_name from run $run_id -> $out"
               http_code=$(curl -sSL -w "%{http_code}" -H "Accept: application/vnd.github+json" -H "$AUTH_HDR" -o "$out" "$archive_url" || echo "000")
               if [ "$http_code" != "200" ] && [ "$http_code" != "302" ] && [ "$http_code" != "307" ]; then
                 echo "  Warning: failed to download artifact $art_id (http $http_code)"
@@ -174,7 +195,7 @@ jobs:
                   | while IFS= read -r -d '' f; do
                       dest=$(basename "$f" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
                       cp -f "$f" "${docs_data}/${dest}"
-                      echo "   -> extracted ${dest}"
+                      echo "   -> extracted ${dest} to ${docs_data}/"
                   done
                 rm -rf "$tmpd"
               else
@@ -183,11 +204,18 @@ jobs:
             done < "$tmp_art"
           done < "$runs_file"
 
-          # --- global post-process (run once after all runs processed) ---
+          # GLOBAL post-process (conservative behavior)
           docs_data="${docs_data%/}"
-          # Cartella dove spostare i file più vecchi, fuori da docs/data
-          older_dir="${OUT_DIR}/older"   # OUT_DIR = docs (definito nella sezione env)
+          older_dir="${out_dir:-}${out_dir:+/}older"
           mkdir -p "$older_dir"
+          echo "Docs data: $docs_data"
+          echo "Older dir: $older_dir"
+          # Build stable list of files
+          mapfile -t allfiles < <(find "$docs_data" -maxdepth 1 -type f -printf '%P\n' | sort)
+          declare -A best_for_subtype
+          declare -A best_run
+          declare -A best_artid
+          non_prefixed_files=()
 
           parse_prefixed() {
             local bn="$1"
@@ -197,14 +225,6 @@ jobs:
             fi
             return 1
           }
-
-          declare -A best_for_subtype
-          declare -A best_run
-          declare -A best_artid
-          non_prefixed_files=()
-
-          # build a stable list of files
-          mapfile -t allfiles < <(find "$docs_data" -maxdepth 1 -type f -printf '%P\n' | sort)
 
           for bn in "${allfiles[@]}"; do
             f="${docs_data}/${bn}"
@@ -224,7 +244,7 @@ jobs:
             fi
           done
 
-          # move prefixed files not selected
+          # Move older prefixed files (keep best)
           for bn in "${allfiles[@]}"; do
             f="${docs_data}/${bn}"
             if parse_prefixed "$bn" >/dev/null 2>&1; then
@@ -236,12 +256,12 @@ jobs:
                 echo "Keeping prefixed file: ${bn}"
               else
                 echo "Moving older prefixed file: ${bn} -> ${older_dir}/"
-                mv -f "$f" "${older_dir}/" || echo " Failed to move $f"
+                mv -v "$f" "${older_dir}/" || echo " Failed to move $f"
               fi
             fi
           done
 
-          # delete non-prefixed files
+          # Delete non-prefixed files (conservative: list them in diagnostics before deleting)
           for f in "${non_prefixed_files[@]:-}"; do
             bn=$(basename "$f")
             echo "Deleting non-prefixed file: ${bn}"
@@ -265,13 +285,13 @@ jobs:
           PUBLIC_PAGE: ${{ env.PUBLIC_PAGE }}
         run: |
           node .github/scripts/fetch_page.js "${PUBLIC_PAGE}" /tmp/im_public.html
-          ls -la /tmp/im_public.html
+          ls -la /tmp/im_public.html || true
 
       - name: Parse run links from rendered page
         run: |
           .github/scripts/parse_runs.sh /tmp/im_public.html /tmp/im_runs/list.txt
           echo "Run links:"
-          cat /tmp/im_runs/list.txt || true
+          sed -n '1,200p' /tmp/im_runs/list.txt || true
 
       - name: Download allowed artifacts from runs
         env:
@@ -280,23 +300,27 @@ jobs:
           DOCS_DATA: ${{ env.DOCS_DATA }}
           OUT_DIR: ${{ env.OUT_DIR }}
         run: |
-          .github/scripts/download_artifacts.sh /tmp/im_runs/list.txt "${ARTIFACTS_DIR}" "${DOCS_DATA}" "${SECRET_PAT}"
+          echo "DEBUG env: OUT_DIR=$OUT_DIR ARTIFACTS_DIR=$ARTIFACTS_DIR DOCS_DATA=$DOCS_DATA"
+          mkdir -p "$ARTIFACTS_DIR" "$DOCS_DATA" "$OUT_DIR"
+          .github/scripts/download_artifacts.sh /tmp/im_runs/list.txt "$ARTIFACTS_DIR" "$DOCS_DATA" "$SECRET_PAT" "$OUT_DIR"
+          echo "After download:"
+          ls -la "$ARTIFACTS_DIR" || true
+          ls -la "$DOCS_DATA" || true
+          echo "Count docs/data:" $(find "$DOCS_DATA" -maxdepth 1 -type f | wc -l) || true
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install python deps
         run: pip install --upgrade pip && pip install pandas plotly
 
-    # - name: Generate HTML
-    #   run: |
-    #     set -euo pipefail
-    #     mkdir -p docs data_zips
-    #     python3 -u generate_html.py || true
-    #     find docs -maxdepth 2 -type f -print || true
-    #     ls -la docs/data || true
+      - name: Run HTML generator (idempotent)
+        run: |
+          python3 -u generate_html.py || true
+          ls -la "$OUT_DIR" || true
+          ls -la "$DOCS_DATA" || true
 
       - name: Commit and push generated site
         run: |
