@@ -31,5 +31,8 @@ sample_record:
   "median_e2el": 21.83754157857038,
   "std_e2el": 2.039651013552188,
   "p99_e2el": 26.342425245642666,
+  "isl": "1k",
+  "osl": "1k",
+  "file_key": "results_70b_1k1k",
   "mtp": NaN
 }
