@@ -183,43 +183,52 @@ jobs:
           done < "$runs_file"
 
           # --------------------------------------------------------------
-          #  🧹  NEW CLEAN‑UP LOGIC (replaces the old block)
+          #  🧹  CLEAN‑UP – keep the newest file for each “subtype”
           # --------------------------------------------------------------
-          # Files we always want to keep, even if they have no prefix
-          KEEP_ALWAYS=("data_index.json")   # add more names here if needed
-
+          
+          # Files that must never be removed (add more names if needed)
+          KEEP_ALWAYS=("data_index.json")
+          
           DOCS_DATA="${docs_data%/}"
           OLDER_DIR="${DOCS_DATA}/older"
           mkdir -p "$OLDER_DIR"
-
+          
           # -----------------------------------------------------------------
-          # Helper: extract run‑id, artifact‑id and the “subtype” part of a name
+          # Helper: split a prefixed filename into run‑id, artifact‑id and subtype
+          #   <run‑id>-<artifact‑id>-<something>.<ext>
+          #   subtype = <something> without any “__agg_…” suffix or extension
           # -----------------------------------------------------------------
           parse_prefixed() {
             local fn="$1"
             [[ "$fn" =~ ^([0-9]+)-([0-9]+)-(.+)$ ]] || return 1
             printf '%s\t%s\t%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
           }
-
+          
           # -----------------------------------------------------------------
-          # Scan the directory once, decide which file to keep for each subtype
+          # Scan the directory once and remember the newest file for each subtype
           # -----------------------------------------------------------------
-          declare -A best_file   # subtype → full path of the newest file
+          declare -A best_file   # subtype → full path of newest file
           declare -A best_run    # subtype → run‑id (numeric)
           declare -A best_art    # subtype → artifact‑id (numeric)
-          non_prefixed=()
-
+          
           while IFS= read -r -d '' f; do
             bn=$(basename "$f")
-            # Skip files we always keep
+          
+            # -----------------------------------------------------------------
+            # Skip files that must be kept unchanged
+            # -----------------------------------------------------------------
             for keep in "${KEEP_ALWAYS[@]}"; do
               [[ "$bn" == "$keep" ]] && continue 2
             done
-
+          
+            # -----------------------------------------------------------------
+            # If the file has the expected prefix, decide whether it is the newest
+            # -----------------------------------------------------------------
             if parsed=$(parse_prefixed "$bn"); then
               IFS=$'\t' read -r run art subtype <<< "$parsed"
-              # Normalise subtype (remove possible __agg_… suffix and extension)
+              # Normalise subtype (remove possible __agg_… suffix and file extension)
               subtype=$(printf '%s' "$subtype" | sed -E 's/__agg_.*$//' | sed -E 's/\.[^.]+$//')
+          
               # Update the “best” entry for this subtype
               if [[ -z "${best_run[$subtype]+x}" ]] ||
                  (( run > best_run[$subtype] )) ||
@@ -229,12 +238,13 @@ jobs:
                 best_file[$subtype]="$f"
               fi
             else
-              non_prefixed+=("$f")
+              # Non‑prefixed files will be deleted later (unless in KEEP_ALWAYS)
+              :
             fi
           done < <(find "$DOCS_DATA" -maxdepth 1 -type f -print0)
-
+          
           # -----------------------------------------------------------------
-          # Move older prefixed files to the “older” folder
+          # Move every prefixed file that is NOT the newest into the “older” folder
           # -----------------------------------------------------------------
           while IFS= read -r -d '' f; do
             bn=$(basename "$f")
@@ -249,13 +259,12 @@ jobs:
               fi
             fi
           done < <(find "$DOCS_DATA" -maxdepth 1 -type f -print0)
-
+          
           # -----------------------------------------------------------------
-          # Delete non‑prefixed files (except those we explicitly keep)
+          # Delete every non‑prefixed file that isn’t explicitly kept
           # -----------------------------------------------------------------
-          for f in "${non_prefixed[@]}"; do
+          while IFS= read -r -d '' f; do
             bn=$(basename "$f")
-            # Skip always‑kept files
             skip=0
             for keep in "${KEEP_ALWAYS[@]}"; do
               [[ "$bn" == "$keep" ]] && skip=1 && break
@@ -263,10 +272,13 @@ jobs:
             (( skip )) && continue
             echo "Deleting stale file: $bn"
             rm -f "$f"
-          done
-
-          echo "Clean‑up complete. Final contents of ${DOCS_DATA}:"
+          done < <(find "$DOCS_DATA" -maxdepth 1 -type f -print0)
+          
+          echo "Clean‑up finished. Final contents of ${DOCS_DATA}:"
           ls -1 "${DOCS_DATA}"
+          
+
+          
           SH
           chmod +x .github/scripts/*.sh
 
