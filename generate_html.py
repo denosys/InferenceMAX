@@ -73,27 +73,42 @@ def build_dataframe_from_files(files: List[Path]) -> pd.DataFrame:
             print(f"Warning: failed to parse {p.name}, skipping")
             continue
         recs = normalize_records_from_json(j)
-        # attach inferred file key metadata if filename matches FILE_MAP
         key = next((k for k in FILE_MAP.keys() if k in p.name), None)
-        for r in recs:
+        for idx, r in enumerate(recs):
             if key:
                 m, isl, osl = FILE_MAP[key]
                 r.setdefault("model", m)
                 r.setdefault("isl", isl)
                 r.setdefault("osl", osl)
                 r.setdefault("file_key", key)
+            # normalize tp (cards) and conc (concurrent users)
+            if "tp" not in r and "cards" in r:
+                r["tp"] = r.get("cards")
+            if "conc" not in r and "concurrent_users" in r:
+                r["conc"] = r.get("concurrent_users")
+            # ensure run_id/sample id
+            if "run_id" not in r:
+                r["run_id"] = r.get("sample_id", idx)
+            # normalize precision lowercase
+            if "precision" in r:
+                try:
+                    r["precision"] = str(r["precision"]).lower()
+                except Exception:
+                    r["precision"] = r["precision"]
         records.extend(recs)
     if not records:
         return pd.DataFrame()
     df = pd.json_normalize(records)
-    # normalize hw name
+    # normalize hardware column to hw lowercased
     if "hw" in df.columns:
         df["hw"] = df["hw"].astype(str).str.lower()
     elif "hardware" in df.columns:
         df["hw"] = df["hardware"].astype(str).str.lower()
-    # ensure precision column
+    # ensure precision column exists and is lowercase
     if "precision" not in df.columns:
         df["precision"] = "fp8"
+    else:
+        df["precision"] = df["precision"].astype(str).str.lower()
     # coerce numeric-like strings
     for c in df.columns:
         if df[c].dtype == object:
@@ -193,10 +208,14 @@ const MODELS = buildModelsFromCLIENT();
 
 function populateModels(){
   modelSel.innerHTML = '';
+  const seen = new Set();
   for (const m of Object.keys(MODELS)){
+    if (seen.has(m)) continue;
+    seen.add(m);
     const opt = document.createElement('option'); opt.value = m; opt.text = m; modelSel.appendChild(opt);
   }
 }
+
 function populateContextsForModel(model){
   ctxSel.innerHTML = '';
   const entries = MODELS[model] || [];
@@ -204,15 +223,12 @@ function populateContextsForModel(model){
     const opt = document.createElement('option'); opt.value = e[2]; opt.text = e[0] + '/' + e[1]; ctxSel.appendChild(opt);
   }
 }
-function updateRunInfo(key){
-  runInfo.textContent = key || '';
-}
+
 function populateYOptionsForKey(key){
   ySel.innerHTML = '';
   const payload = CLIENT_MAP[key];
   if (!payload){ ySel.appendChild(new Option('(no data)','')); return; }
   const cols = payload.columns || [];
-  // detect numeric by scanning first record
   const rec = (payload.records && payload.records.length) ? payload.records[0] : {};
   const numeric = [];
   for (const c of cols){
@@ -227,6 +243,7 @@ function populateYOptionsForKey(key){
   }
   if (!ySel.options.length) ySel.appendChild(new Option('(no numeric)',''));
 }
+
 function populateTpOptionsForKey(key){
   tpSel.innerHTML = '';
   const payload = CLIENT_MAP[key];
@@ -245,37 +262,53 @@ function buildTraces(records, xcol, ycol, connectTp, tpFilter, precFilter){
   const traces = [];
   if (!records || !records.length) return traces;
   let recs = records.slice();
-  if (precFilter && precFilter!=='all') recs = recs.filter(r=> (r.precision||'').toString().toLowerCase()===precFilter);
+  if (precFilter && precFilter!=='all') recs = recs.filter(r=> (String(r.precision||'').toLowerCase())===String(precFilter));
   if (tpFilter && tpFilter!=='all') recs = recs.filter(r=> String(r.tp)===String(tpFilter));
+  // group by hw and series key: if connectTp -> series per (hw,tp), else per (hw,conc,run_id)
   const groups = {};
   for (const r of recs){
     const hw = (r.hw||r.hardware||'unknown').toString().toLowerCase();
-    groups[hw] = groups[hw]||[];
-    groups[hw].push(r);
-  }
-  const hwKeys = Object.keys(groups).sort();
-  for (const hw of hwKeys){
-    const grp = groups[hw];
-    const hasTp = grp.some(r=> r.hasOwnProperty('tp') && r.tp!=='');
-    if (hasTp && connectTp){
-      const tmap = {};
-      for (const r of grp){
-        const tp = (r.tp!==undefined && r.tp!=='')? String(r.tp): 'none';
-        tmap[tp]=tmap[tp]||[];
-        tmap[tp].push(r);
-      }
-      const tpKeys = Object.keys(tmap).sort((a,b)=>{ const na=Number(a), nb=Number(b); if(!isNaN(na)&&!isNaN(nb)) return na-nb; return a.localeCompare(b);});
-      for (const tp of tpKeys){
-        const rows = tmap[tp];
-        const xs = rows.map(r=> Number(r[xcol])); const ys = rows.map(r=> Number(r[ycol]));
-        traces.push({x:xs,y:ys,mode:'lines+markers',name: hw + ' tp=' + tp, legendgroup: hw,
-                     text: rows.map(r=> 'tp=' + (r.tp||'') + ' model=' + (r.model||'')), hoverinfo:'text+x+y'});
-      }
+    const tp = (r.tp===undefined || r.tp==='') ? 'none' : String(r.tp);
+    const conc = (r.conc===undefined || r.conc==='') ? null : String(r.conc);
+    const runId = (r.run_id!==undefined && r.run_id!=='') ? String(r.run_id) : null;
+    let seriesKey;
+    if (connectTp){
+      seriesKey = hw + '||tp=' + tp;
     } else {
-      const xs = grp.map(r=> Number(r[xcol])); const ys = grp.map(r=> Number(r[ycol]));
-      traces.push({x:xs,y:ys,mode:'markers',name: hw, legendgroup: hw,
-                   text: grp.map(r=> 'tp=' + (r.tp||'') + ' model=' + (r.model||'')), hoverinfo:'text+x+y'});
+      // each distinct (hw,conc,runId) becomes its own series so points aren't inadvertently connected across conc values
+      seriesKey = hw + '||conc=' + (conc||'none') + '||run=' + (runId||'idx');
     }
+    groups[seriesKey] = groups[seriesKey]||{rows:[], hw:hw, tp:tp, conc:conc};
+    groups[seriesKey].rows.push(Object.assign({}, r, {__run_id: runId}));
+  }
+  const seriesKeys = Object.keys(groups).sort();
+  for (const key of seriesKeys){
+    const meta = groups[key];
+    // sort rows by conc (if present) then run_id numeric if available
+    meta.rows.sort((a,b)=>{
+      const ca = a.conc!==undefined && a.conc!==null ? Number(a.conc) : NaN;
+      const cb = b.conc!==undefined && b.conc!==null ? Number(b.conc) : NaN;
+      if (!isNaN(ca) && !isNaN(cb) && ca!==cb) return ca - cb;
+      const ra = a.__run_id!==null ? Number(a.__run_id) : NaN;
+      const rb = b.__run_id!==null ? Number(b.__run_id) : NaN;
+      if (!isNaN(ra) && !isNaN(rb)) return ra - rb;
+      return 0;
+    });
+    const xs = meta.rows.map(r=> Number(r[xcol]));
+    const ys = meta.rows.map(r=> Number(r[ycol]));
+    const nameParts = [meta.hw];
+    if (meta.tp && meta.tp!=='none') nameParts.push('tp=' + meta.tp);
+    // if not connecting by tp, include conc in legend for clarity
+    if (!connectTp && meta.conc) nameParts.push('conc=' + meta.conc);
+    traces.push({
+      x: xs,
+      y: ys,
+      mode: connectTp ? 'lines+markers' : 'markers',
+      name: nameParts.join(' '),
+      legendgroup: meta.hw,
+      text: meta.rows.map(r=> 'tp=' + (r.tp||'') + ' conc=' + (r.conc||'') + ' model=' + (r.model||'')),
+      hoverinfo: 'text+x+y'
+    });
   }
   return traces;
 }
