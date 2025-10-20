@@ -7,22 +7,15 @@ on:
 permissions:
   contents: write
 
-env:
-  NODE_VERSION: "20"
-  PYTHON_VERSION: "3.11"
-
 jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      OUT_DIR: ${{ github.workspace }}/docs
-      ARTIFACTS_DIR: ${{ github.workspace }}/data_zips
-      DOCS_DATA: ${{ github.workspace }}/docs/data
       SECRET_PAT: ${{ secrets.SECRET_PAT }}
       PUBLIC_PAGE: https://inferencemax.semianalysis.com
+      ARTIFACTS_DIR: data_zips
+      DOCS_DATA: docs/data
       NODE_VERSION: "20"
-      PYTHON_VERSION: "3.11"
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -39,7 +32,7 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Add helper scripts
+      - name: Add puppeteer helper and scripts
         run: |
           mkdir -p .github/scripts
           cat > .github/scripts/fetch_page.js <<'NODEJS'
@@ -70,7 +63,6 @@ jobs:
             }
           })();
           NODEJS
-
           cat > .github/scripts/parse_runs.sh <<'SH'
           #!/usr/bin/env bash
           set -euo pipefail
@@ -81,35 +73,17 @@ jobs:
           : > "$tmp_out"
           grep -Eo 'https?://github.com/[^/]+/[^/]+/actions/runs/[0-9]+' "$infile" >> "$tmp_out" || true
           grep -Eo '/[^/]+/[^/]+/actions/runs/[0-9]+' "$infile" | sed 's|^|https://github.com|' >> "$tmp_out" || true
-          sort -u "$tmp_out" > "$out"
+          sort -u "$tmp_out" > "$out" || true
           echo "Parsed run list written to $out"
           SH
-
           cat > .github/scripts/download_artifacts.sh <<'SH'
           #!/usr/bin/env bash
           set -euo pipefail
-          # Usage: download_artifacts.sh <runs_file> <artifacts_dir> <docs_data> <secret_pat> <out_dir>
-
-          runs_file="${1:-}"
-          artifacts_dir="${2:-}"
-          docs_data="${3:-}"
-          secret_pat="${4:-}"
-          out_dir="${5:-}"
-
-          if [ -z "$runs_file" ] || [ -z "$artifacts_dir" ] || [ -z "$docs_data" ] || [ -z "$secret_pat" ]; then
-            echo "Usage: $0 <runs_file> <artifacts_dir> <docs_data> <secret_pat> [out_dir]"
-            exit 2
-          fi
-
-          artifacts_dir="${artifacts_dir%/}"
-          docs_data="${docs_data%/}"
-          out_dir="${out_dir%/}"
-
+          runs_file="$1"
+          artifacts_dir="$2"
+          docs_data="$3"
+          secret_pat="$4"
           mkdir -p "$artifacts_dir" "$docs_data" /tmp/im_runs
-          if [ -n "$out_dir" ]; then
-            mkdir -p "$out_dir"
-          fi
-
           read -r -d '' ALLOWED <<'EOT' || true
           results_gptoss_1k1k.zip
           results_gptoss_8k1k.zip
@@ -121,7 +95,6 @@ jobs:
           results_dsr1_8k1k.zip
           results_dsr1_1k8k.zip
           EOT
-
           is_allowed() {
             local name="$1"
             while IFS= read -r line; do
@@ -129,7 +102,6 @@ jobs:
             done <<< "$ALLOWED"
             return 1
           }
-
           AUTH_HDR="Authorization: token ${secret_pat}"
 
           fetch_all_artifacts_for_run() {
@@ -157,11 +129,7 @@ jobs:
             done
           }
 
-          # temp root for all extractions
-          tmp_root="$(mktemp -d)"
-          trap 'rm -rf "${tmp_root}"' EXIT
-
-          # MAIN loop: download artifacts and extract into per-run/artifact temp dirs
+          # iterate runs and download/extract allowed artifacts
           while IFS= read -r run_url || [ -n "$run_url" ]; do
             [ -z "$run_url" ] && continue
             owner=$(echo "$run_url" | awk -F'/' '{print $4}')
@@ -175,6 +143,7 @@ jobs:
               echo " No artifacts for run $run_id"
               continue
             fi
+            # iterate items (each line is a JSON artifact)
             while IFS= read -r art; do
               art_id=$(echo "$art" | jq -r '.id')
               art_name=$(echo "$art" | jq -r '.name')
@@ -187,7 +156,7 @@ jobs:
               archive_url=$(echo "$art" | jq -r '.archive_download_url')
               safe_name="${run_id}-${art_id}-${art_name}"
               out="${artifacts_dir}/${safe_name}.zip"
-              echo " Downloading artifact $art_name from run $run_id -> $out"
+              echo " Downloading artifact $art_name from run $run_id"
               http_code=$(curl -sSL -w "%{http_code}" -H "Accept: application/vnd.github+json" -H "$AUTH_HDR" -o "$out" "$archive_url" || echo "000")
               if [ "$http_code" != "200" ] && [ "$http_code" != "302" ] && [ "$http_code" != "307" ]; then
                 echo "  Warning: failed to download artifact $art_id (http $http_code)"
@@ -195,37 +164,25 @@ jobs:
                 continue
               fi
               if [ -s "$out" ] && unzip -t "$out" >/dev/null 2>&1; then
-                # create a dedicated temp dir for this run+artifact and extract there
-                tmpd="$(mktemp -d "${tmp_root}/run_${run_id}_art_${art_id}_XXXX")"
+                tmpd=$(mktemp -d)
                 unzip -q "$out" -d "$tmpd"
-                # record mapping of extracted files to their source (run/artid) by prefixing filenames
-                find "$tmpd" -type f $ -iname "agg_*.json" -o -iname "*.json" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" $ -print0 \
+                find "$tmpd" -type f -name "agg_*.json" -o -name "*.json" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" -print0 \
                   | while IFS= read -r -d '' f; do
-                      # keep original basename but prefix with run-artid- so parse_prefixed sees it
-                      dest_basename="$(basename "$f" | sed -E 's/[^A-Za-z0-9._-]+/_/g')"
-                      prefixed_name="${run_id}-${art_id}-${dest_basename}"
-                      mv -f "$f" "${tmpd}/${prefixed_name}"
-                      echo "   -> extracted ${prefixed_name} to ${tmpd}/"
+                      dest=$(basename "$f" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
+                      cp -f "$f" "${docs_data}/${dest}"
+                      echo "   -> extracted ${dest}"
                   done
-                # leave tmpd in tmp_root; we'll select best files across all tmpd later
+                rm -rf "$tmpd"
               else
                 echo "  Warning: artifact $out not a valid zip or empty"
               fi
             done < "$tmp_art"
           done < "$runs_file"
 
-          # Now global post-process on files inside tmp_root (not yet copied to docs_data)
-          echo "Docs data (target): $docs_data"
-          echo "Temp root with extracted files: $tmp_root"
-
-          # Build stable list of files from tmp_root and existing docs_data (we want to consider both)
-          mapfile -t tmpfiles < <(find "$tmp_root" -type f -printf '%P\n' | sort)
-          mapfile -t existingfiles < <(find "$docs_data" -maxdepth 1 -type f -printf '%P\n' | sort)
-
-          declare -A best_for_subtype
-          declare -A best_run
-          declare -A best_artid
-          declare -A best_path
+          # --- global post-process (run once after all runs processed) ---
+          docs_data="${docs_data%/}"
+          older_dir="${docs_data}/older"
+          mkdir -p "$older_dir"
 
           parse_prefixed() {
             local bn="$1"
@@ -236,18 +193,17 @@ jobs:
             return 1
           }
 
-          # Helper: consider a candidate file (path relative to either tmp_root or docs_data)
-          consider_candidate() {
-            local relpath="$1"
-            local src_type="$2" # "tmp" or "existing"
-            local fullpath
-            if [ "$src_type" = "tmp" ]; then
-              fullpath="${tmp_root}/${relpath}"
-            else
-              fullpath="${docs_data}/${relpath}"
-            fi
+          declare -A best_for_subtype
+          declare -A best_run
+          declare -A best_artid
+          non_prefixed_files=()
 
-            if parsed=$(parse_prefixed "$(basename "$relpath")" 2>/dev/null); then
+          # build a stable list of files
+          mapfile -t allfiles < <(find "$docs_data" -maxdepth 1 -type f -printf '%P\n' | sort)
+
+          for bn in "${allfiles[@]}"; do
+            f="${docs_data}/${bn}"
+            if parsed=$(parse_prefixed "$bn" 2>/dev/null); then
               IFS=$'\t' read -r run artid namepart <<< "$parsed"
               subtype=$(printf '%s' "$namepart" | sed -E 's/__agg_.*$//' | sed -E 's/\.[^.]+$//')
               run=${run:-0}; artid=${artid:-0}
@@ -256,116 +212,44 @@ jobs:
               if (( run > prev_run )) || { (( run == prev_run )) && (( artid > prev_art )); }; then
                 best_run[$subtype]="$run"
                 best_artid[$subtype]="$artid"
-                best_for_subtype[$subtype]="$fullpath"
-                best_path[$subtype]="$relpath"
+                best_for_subtype[$subtype]="$f"
               fi
             else
-              # non-prefixed existing files should be considered diagnostics-only; prefer to delete them later
-              :
+              non_prefixed_files+=("$f")
             fi
-          }
-
-          # Consider existing files in docs_data first (they may be best)
-          for bn in "${existingfiles[@]}"; do
-            consider_candidate "$bn" "existing"
           done
 
-          # Consider extracted temp files
-          for bn in "${tmpfiles[@]}"; do
-            consider_candidate "$bn" "tmp"
-          done
-
-          # --- Begin: ensure exactly chosen bests in docs/data, move other prefixed -> docs/older ---
-
-          # remove non-prefixed index for safety
-          rm -f "${docs_data}/data_index.json" || true
-
-          # ensure older dir exists
-          mkdir -p "${out_dir}/older" || true
-
-          # Build list of chosen basenames (from best_for_subtype)
-          chosen=()
-          for f in "${!best_for_subtype[@]}"; do
-            chosen+=("$(basename "${best_for_subtype[$f]}")")
-          done
-
-          # Move any prefixed files currently in docs_data that are NOT in chosen -> older
-          find "${docs_data}" -maxdepth 1 -type f -printf '%f\n' | while IFS= read -r bn; do
-            if [[ "$bn" =~ ^[0-9]+-[0-9]+- ]]; then
-              keep=0
-              for c in "${chosen[@]}"; do
-                [[ "$bn" == "$c" ]] && keep=1 && break
+          # move prefixed files not selected
+          for bn in "${allfiles[@]}"; do
+            f="${docs_data}/${bn}"
+            if parse_prefixed "$bn" >/dev/null 2>&1; then
+              keep_this=0
+              for s in "${!best_for_subtype[@]}"; do
+                [ "${best_for_subtype[$s]}" = "$f" ] && keep_this=1 && break
               done
-              if [ "$keep" -eq 0 ]; then
-                echo "Moving extra prefixed from data -> older: $bn"
-                mv -f "${docs_data}/${bn}" "${out_dir}/older/" || echo " mv failed $bn"
+              if [ "$keep_this" -eq 1 ]; then
+                echo "Keeping prefixed file: ${bn}"
+              else
+                echo "Moving older prefixed file: ${bn} -> ${older_dir}/"
+                mv -f "$f" "${older_dir}/" || echo " Failed to move $f"
               fi
             fi
           done
 
-          # Move any prefixed files in repo root (accidental) into older if not chosen
-          repo_root="$(dirname "${docs_data}")"
-          find "${repo_root}" -maxdepth 1 -type f -printf '%f\n' | while IFS= read -r bn; do
-            if [[ "$bn" =~ ^[0-9]+-[0-9]+- ]]; then
-              keep=0
-              for c in "${chosen[@]}"; do
-                [[ "$bn" == "$c" ]] && keep=1 && break
-              done
-              if [ "$keep" -eq 0 ]; then
-                echo "Moving root prefixed -> older: $bn"
-                mv -f "${repo_root}/${bn}" "${out_dir}/older/" || echo " mv failed $bn"
-              fi
-            fi
-          done
-
-          # Ensure there are exactly N chosen files in docs/data; if fewer, warn (so you notice)
-          expected_count=${#chosen[@]}
-          actual_count=$(find "${docs_data}" -maxdepth 1 -type f -name '[0-9]*-*' | wc -l)
-          echo "Expected data prefixed files: ${expected_count}, actual: ${actual_count}"
-          if [ "$actual_count" -ne "$expected_count" ]; then
-            echo "Mismatch: expected ${expected_count} prefixed files in ${docs_data} but found ${actual_count}" >&2
-            # exit 1  # optional: uncomment to fail the job if mismatch
-          fi
-
-          # Copy best files from tmp_root into docs_data (overwrite only if it's the chosen best)
-          for s in "${!best_for_subtype[@]}"; do
-            src="${best_for_subtype[$s]}"
-            rel="${best_path[$s]}"
-            # If source is inside tmp_root, copy it; if it's already the existing docs_data file, skip
-            if [[ "$src" == "${tmp_root}"* ]]; then
-              dest_basename="$(basename "$rel")"
-              dest_path="${docs_data}/${dest_basename}"
-              echo "Copying best file for subtype '${s}': $(basename "$src") -> ${dest_path}"
-              cp -f "$src" "$dest_path"
-            else
-              echo "Best file for subtype '${s}' already present: $(basename "$src")"
-            fi
-          done
-
-          # Delete non-prefixed files in docs_data (conservative: list them then delete)
-          non_prefixed_files=()
-          for f in "${existingfiles[@]:-}"; do
-            if ! parse_prefixed "$f" >/dev/null 2>&1; then
-              non_prefixed_files+=("${docs_data}/${f}")
-            fi
-          done
-
+          # delete non-prefixed files
           for f in "${non_prefixed_files[@]:-}"; do
             bn=$(basename "$f")
             echo "Deleting non-prefixed file: ${bn}"
             rm -f "$f" || echo " Failed to delete $f"
           done
 
-          # Optional: cleanup artifact zips
-          rm -f "${artifacts_dir}"/*.zip || true
-
           echo "Global post-process complete. Kept files:"
           for s in "${!best_for_subtype[@]}"; do
             echo "  - $(basename "${best_for_subtype[$s]}")"
           done
           SH
-
           chmod +x .github/scripts/*.sh
+
       - name: Install node deps (puppeteer)
         run: |
           npm init -y
@@ -376,42 +260,37 @@ jobs:
           PUBLIC_PAGE: ${{ env.PUBLIC_PAGE }}
         run: |
           node .github/scripts/fetch_page.js "${PUBLIC_PAGE}" /tmp/im_public.html
-          ls -la /tmp/im_public.html || true
+          ls -la /tmp/im_public.html
 
       - name: Parse run links from rendered page
         run: |
           .github/scripts/parse_runs.sh /tmp/im_public.html /tmp/im_runs/list.txt
           echo "Run links:"
-          sed -n '1,200p' /tmp/im_runs/list.txt || true
+          cat /tmp/im_runs/list.txt || true
 
       - name: Download allowed artifacts from runs
         env:
           SECRET_PAT: ${{ env.SECRET_PAT }}
           ARTIFACTS_DIR: ${{ env.ARTIFACTS_DIR }}
           DOCS_DATA: ${{ env.DOCS_DATA }}
-          OUT_DIR: ${{ env.OUT_DIR }}
         run: |
-          echo "DEBUG env: OUT_DIR=$OUT_DIR ARTIFACTS_DIR=$ARTIFACTS_DIR DOCS_DATA=$DOCS_DATA"
-          mkdir -p "$ARTIFACTS_DIR" "$DOCS_DATA" "$OUT_DIR"
-          .github/scripts/download_artifacts.sh /tmp/im_runs/list.txt "$ARTIFACTS_DIR" "$DOCS_DATA" "$SECRET_PAT" "$OUT_DIR"
-          echo "After download:"
-          ls -la "$ARTIFACTS_DIR" || true
-          ls -la "$DOCS_DATA" || true
-          echo "Count docs/data:" $(find "$DOCS_DATA" -maxdepth 1 -type f | wc -l) || true
+          .github/scripts/download_artifacts.sh /tmp/im_runs/list.txt "${ARTIFACTS_DIR}" "${DOCS_DATA}" "${SECRET_PAT}"
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: "3.11"
 
       - name: Install python deps
         run: pip install --upgrade pip && pip install pandas plotly
 
-      - name: Run HTML generator (idempotent)
+      - name: Generate HTML
         run: |
+          set -euo pipefail
+          mkdir -p docs data_zips
           python3 -u generate_html.py || true
-          ls -la "$OUT_DIR" || true
-          ls -la "$DOCS_DATA" || true
+          find docs -maxdepth 2 -type f -print || true
+          ls -la docs/data || true
 
       - name: Commit and push generated site
         run: |
@@ -419,10 +298,10 @@ jobs:
           git config --local user.email "actions@github.com"
           git config --local user.name "GitHub Actions"
           git remote set-url origin https://x-access-token:${{ secrets.SECRET_PAT }}@github.com/${{ github.repository }}.git
-          git add docs/data docs/older docs || true
+          git add docs || true
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
             git commit -m "nightly: update pages and data"
             git push origin HEAD
-          fi    
+          fi
