@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# generate_html.py (sterilized)
+# generate_html.py (updated)
 import os
 import json
 from pathlib import Path
@@ -16,20 +16,31 @@ DIAG_FILE = OUT_DIR / "diagnostics.txt"
 STATIC_DIR = OUT_DIR / "static"
 TMP_DIR = Path(os.environ.get("TMPDIR", "/tmp")) / "generate_html_tmp"
 
-# ensure output dirs exist (but do not create or modify DATA_DIR contents)
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 
+# mapping filenames -> (model, isl, osl)
+FILE_MAP = {
+    "results_70b_1k1k": ("Llama-3.3-70B-Instruct", "1k", "1k"),
+    "results_70b_8k1k": ("Llama-3.3-70B-Instruct", "8k", "1k"),
+    "results_70b_1k8k": ("Llama-3.3-70B-Instruct", "1k", "8k"),
+    "results_dsr1_1k1k": ("DeepSeek-R1-0528", "1k", "1k"),
+    "results_dsr1_8k1k": ("DeepSeek-R1-0528", "8k", "1k"),
+    "results_dsr1_1k8k": ("DeepSeek-R1-0528", "1k", "8k"),
+    "results_gptoss_1k1k": ("gpt-oss-120b", "1k", "1k"),
+    "results_gptoss_8k1k": ("gpt-oss-120b", "8k", "1k"),
+    "results_gptoss_1k8k": ("gpt-oss-120b", "1k", "8k"),
+}
+
 def list_data_files() -> List[Path]:
-    """List files in docs/data excluding docs/data/older. Do not modify files."""
     if not DATA_DIR.exists():
         return []
     files = []
     for p in sorted(DATA_DIR.iterdir()):
         if p == OLDER_DIR:
             continue
-        if p.is_file():
+        if p.is_file() and p.suffix.lower() == ".json":
             files.append(p)
     return files
 
@@ -62,18 +73,40 @@ def build_dataframe_from_files(files: List[Path]) -> pd.DataFrame:
             print(f"Warning: failed to parse {p.name}, skipping")
             continue
         recs = normalize_records_from_json(j)
+        # attach inferred file key metadata if filename matches FILE_MAP
+        key = next((k for k in FILE_MAP.keys() if k in p.name), None)
+        for r in recs:
+            if key:
+                m, isl, osl = FILE_MAP[key]
+                r.setdefault("model", m)
+                r.setdefault("isl", isl)
+                r.setdefault("osl", osl)
+                r.setdefault("file_key", key)
         records.extend(recs)
     if not records:
         return pd.DataFrame()
-    return pd.json_normalize(records)
+    df = pd.json_normalize(records)
+    # normalize hw name
+    if "hw" in df.columns:
+        df["hw"] = df["hw"].astype(str).str.lower()
+    elif "hardware" in df.columns:
+        df["hw"] = df["hardware"].astype(str).str.lower()
+    # ensure precision column
+    if "precision" not in df.columns:
+        df["precision"] = "fp8"
+    # coerce numeric-like strings
+    for c in df.columns:
+        if df[c].dtype == object:
+            coerced = pd.to_numeric(df[c], errors="coerce")
+            if coerced.notna().any():
+                df[c] = coerced
+    return df
 
 def choose_metric_column(df: pd.DataFrame) -> Optional[str]:
-    pref = ["value","metric","score"]
+    pref = ["tput_per_gpu","value","metric","score"]
     numeric = df.select_dtypes(include=["number"]).columns.tolist()
     for p in pref:
         if p in numeric:
-            return p
-        if p in df.columns and pd.api.types.is_numeric_dtype(df[p]):
             return p
     return numeric[0] if numeric else None
 
@@ -88,67 +121,210 @@ def _build_sample_plot_html(df: pd.DataFrame, metric: str) -> str:
     fig.update_layout(title=f"Sample: {metric}", margin=dict(t=60))
     return fig.to_html(full_html=False, include_plotlyjs="cdn")
 
-def build_plotly_html(df: pd.DataFrame) -> str:
-    if df.empty:
-        sample = [
-            {"hardware":"cpu-a","value":12.3,"run_id":1},
-            {"hardware":"cpu-a","value":13.1,"run_id":2},
-            {"hardware":"gpu-x","value":9.8,"run_id":1},
-            {"hardware":"gpu-x","value":10.2,"run_id":2},
-        ]
-        sample_df = pd.json_normalize(sample)
-        html_sample = _build_sample_plot_html(sample_df, metric="value")
-        info = (
-            "<div style='font-family:system-ui,Arial,sans-serif;padding:24px;'>"
-            "<h2>No data found in docs/data/</h2>"
-            "<p>A sample chart is shown for layout/testing.</p>"
-            "</div>"
-        )
-        return f"<!doctype html><html><head><meta charset='utf-8'><title>InferenceMAX — Pages</title></head><body>{info}{html_sample}</body></html>"
+def build_plotly_html(df: pd.DataFrame, data_file_names: List[str]) -> str:
+    # construct client-side datasets mapping by file_key (only files matched in FILE_MAP)
+    client_map = {}
+    for key in FILE_MAP.keys():
+        # find file present
+        match = next((n for n in data_file_names if key in n), None)
+        if match:
+            p = DATA_DIR / match
+            j = load_json_safe(p)
+            recs = normalize_records_from_json(j)
+            # normalize records same as server
+            for r in recs:
+                r.setdefault("model", FILE_MAP[key][0])
+                r.setdefault("isl", FILE_MAP[key][1])
+                r.setdefault("osl", FILE_MAP[key][2])
+            # coerce numeric fields to strings where necessary for JSON
+            client_map[key] = {
+                "columns": list(pd.json_normalize(recs).columns),
+                "records": recs
+            }
+    # default metric choices
+    default_x = "median_e2el"
+    # start building HTML + controls
+    header = "<!doctype html><html><head><meta charset='utf-8'><title>InferenceMAX — Interactive</title>"
+    header += "<script src='https://cdn.plot.ly/plotly-latest.min.js'></script>"
+    header += "<style>body{font-family:system-ui,Arial,sans-serif;margin:12px;} select{margin-right:8px;} .controls{margin-bottom:8px;}</style>"
+    header += "</head><body>"
+    controls = (
+        "<div class='controls'>"
+        "<label>Modello:</label><select id='model_sel'></select>"
+        "<label>ISL/OSL:</label><select id='ctx_sel'></select>"
+        "<label>Precisione:</label><select id='prec_sel'><option value='all'>Tutte</option><option value='fp8'>FP8</option><option value='fp4'>FP4</option></select>"
+        "<label>TP (cards):</label><select id='tp_sel'><option value='all'>All</option></select>"
+        "<label>Connetti TP:</label><select id='tp_line'><option value='yes'>Sì</option><option value='no' selected>No</option></select>"
+        "<label>Asse Y:</label><select id='y_sel'></select>"
+        "<label>Asse X:</label><select id='x_sel'><option value='median_e2el'>E2E latency</option><option value='median_intvty'>Interactivity</option></select>"
+        "<label>Run/Artifact:</label><strong id='run_info'></strong>"
+        "</div>"
+    )
+    plot_div = "<div id='plot_div' style='width:100%;height:700px;'></div>"
+    # embed client data
+    body_js = f"<script>const CLIENT_MAP = {json.dumps(client_map)}; const FILE_MAP = {json.dumps(FILE_MAP)};</script>"
+    # main JS to populate controls and render plot (kept concise)
+    main_js = """
+<script>
+const modelSel = document.getElementById('model_sel');
+const ctxSel = document.getElementById('ctx_sel');
+const precSel = document.getElementById('prec_sel');
+const tpSel = document.getElementById('tp_sel');
+const tpLine = document.getElementById('tp_line');
+const ySel = document.getElementById('y_sel');
+const xSel = document.getElementById('x_sel');
+const runInfo = document.getElementById('run_info');
 
-    if "tp" in df.columns:
-        try:
-            df = df[df["tp"] == 1]
-        except Exception:
-            pass
+function buildModelsFromCLIENT(){
+  const models = {};
+  for (const k of Object.keys(CLIENT_MAP)){
+    const recs = CLIENT_MAP[k].records || [];
+    if (!recs.length) continue;
+    const m = recs[0].model || 'unknown';
+    const isl = recs[0].isl || '';
+    const osl = recs[0].osl || '';
+    models[m] = models[m] || [];
+    models[m].push([isl, osl, k]);
+  }
+  return models;
+}
 
-    if df.empty:
-        return "<html><body><h3>No data after tp==1 filter</h3></body></html>"
+const MODELS = buildModelsFromCLIENT();
 
-    hw_candidates = ["hardware","device","platform","target"]
-    hw_col = next((c for c in hw_candidates if c in df.columns), None)
-    if hw_col is None:
-        non_numeric = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c])]
-        hw_col = non_numeric[0] if non_numeric else None
-    if hw_col is None:
-        df["hardware"] = df.index.astype(str)
-    else:
-        df["hardware"] = df[hw_col].astype(str)
+function populateModels(){
+  modelSel.innerHTML = '';
+  for (const m of Object.keys(MODELS)){
+    const opt = document.createElement('option'); opt.value = m; opt.text = m; modelSel.appendChild(opt);
+  }
+}
+function populateContextsForModel(model){
+  ctxSel.innerHTML = '';
+  const entries = MODELS[model] || [];
+  for (const e of entries){
+    const opt = document.createElement('option'); opt.value = e[2]; opt.text = e[0] + '/' + e[1]; ctxSel.appendChild(opt);
+  }
+}
+function updateRunInfo(key){
+  runInfo.textContent = key || '';
+}
+function populateYOptionsForKey(key){
+  ySel.innerHTML = '';
+  const payload = CLIENT_MAP[key];
+  if (!payload){ ySel.appendChild(new Option('(no data)','')); return; }
+  const cols = payload.columns || [];
+  // detect numeric by scanning first record
+  const rec = (payload.records && payload.records.length) ? payload.records[0] : {};
+  const numeric = [];
+  for (const c of cols){
+    const v = rec[c];
+    if (v === undefined || v === null || v === '') continue;
+    if (!isNaN(Number(v))) numeric.push(c);
+  }
+  if (numeric.includes('tput_per_gpu')) ySel.appendChild(new Option('tput_per_gpu','tput_per_gpu'));
+  for (const c of numeric){
+    if (c==='tput_per_gpu') continue;
+    ySel.appendChild(new Option(c,c));
+  }
+  if (!ySel.options.length) ySel.appendChild(new Option('(no numeric)',''));
+}
+function populateTpOptionsForKey(key){
+  tpSel.innerHTML = '';
+  const payload = CLIENT_MAP[key];
+  const seen = new Set();
+  if (!payload || !payload.records){ tpSel.appendChild(new Option('All','all')); return; }
+  for (const r of payload.records){
+    const v = r['tp'];
+    if (v===undefined || v===null || v==='') continue;
+    seen.add(String(v));
+  }
+  tpSel.appendChild(new Option('All','all'));
+  Array.from(seen).sort((a,b)=>Number(a)-Number(b)).forEach(v=>tpSel.appendChild(new Option(v,v)));
+}
 
-    metric = choose_metric_column(df)
-    if metric is None:
-        return "<html><body><h3>No numeric metric found in data</h3></body></html>"
+function buildTraces(records, xcol, ycol, connectTp, tpFilter, precFilter){
+  const traces = [];
+  if (!records || !records.length) return traces;
+  let recs = records.slice();
+  if (precFilter && precFilter!=='all') recs = recs.filter(r=> (r.precision||'').toString().toLowerCase()===precFilter);
+  if (tpFilter && tpFilter!=='all') recs = recs.filter(r=> String(r.tp)===String(tpFilter));
+  const groups = {};
+  for (const r of recs){
+    const hw = (r.hw||r.hardware||'unknown').toString().toLowerCase();
+    groups[hw] = groups[hw]||[];
+    groups[hw].push(r);
+  }
+  const hwKeys = Object.keys(groups).sort();
+  for (const hw of hwKeys){
+    const grp = groups[hw];
+    const hasTp = grp.some(r=> r.hasOwnProperty('tp') && r.tp!=='');
+    if (hasTp && connectTp){
+      const tmap = {};
+      for (const r of grp){
+        const tp = (r.tp!==undefined && r.tp!=='')? String(r.tp): 'none';
+        tmap[tp]=tmap[tp]||[];
+        tmap[tp].push(r);
+      }
+      const tpKeys = Object.keys(tmap).sort((a,b)=>{ const na=Number(a), nb=Number(b); if(!isNaN(na)&&!isNaN(nb)) return na-nb; return a.localeCompare(b);});
+      for (const tp of tpKeys){
+        const rows = tmap[tp];
+        const xs = rows.map(r=> Number(r[xcol])); const ys = rows.map(r=> Number(r[ycol]));
+        traces.push({x:xs,y:ys,mode:'lines+markers',name: hw + ' tp=' + tp, legendgroup: hw,
+                     text: rows.map(r=> 'tp=' + (r.tp||'') + ' model=' + (r.model||'')), hoverinfo:'text+x+y'});
+      }
+    } else {
+      const xs = grp.map(r=> Number(r[xcol])); const ys = grp.map(r=> Number(r[ycol]));
+      traces.push({x:xs,y:ys,mode:'markers',name: hw, legendgroup: hw,
+                   text: grp.map(r=> 'tp=' + (r.tp||'') + ' model=' + (r.model||'')), hoverinfo:'text+x+y'});
+    }
+  }
+  return traces;
+}
 
-    hardware_list = sorted(df["hardware"].dropna().unique())
-    fig = go.Figure()
-    x_col = next((c for c in ("timestamp","date","run_id","id","step") if c in df.columns), None)
+function renderForKey(key){
+  const payload = CLIENT_MAP[key];
+  if (!payload){ document.getElementById('plot_div').innerHTML = '<p>No data</p>'; return; }
+  const recs = payload.records || [];
+  const xcol = xSel.value || 'median_e2el';
+  const ycol = ySel.value || '';
+  if (!xcol || !ycol){ document.getElementById('plot_div').innerHTML = '<p>Missing X or Y</p>'; return; }
+  const connectTp = (tpLine.value==='yes');
+  const tpFilter = tpSel.value;
+  const precFilter = precSel.value==='Tutte' ? 'all' : precSel.value.toLowerCase();
+  const traces = buildTraces(recs, xcol, ycol, connectTp, tpFilter, precFilter);
+  const layout = {title: ycol + ' vs ' + xcol, xaxis:{title:xcol}, yaxis:{title:ycol}, legend:{orientation:'v'}};
+  Plotly.newPlot('plot_div', traces, layout, {responsive:true});
+}
 
-    for hw in hardware_list:
-        d = df[df["hardware"] == hw].copy()
-        x = d[x_col].tolist() if x_col and x_col in d.columns else list(range(len(d)))
-        y = d[metric].tolist()
-        fig.add_trace(go.Scatter(x=x,y=y,mode="lines+markers",name=str(hw)))
+// init
+populateModels();
+if (modelSel.options.length){
+  modelSel.value = modelSel.options[0].value;
+  populateContextsForModel(modelSel.value);
+  if (ctxSel.options.length){
+    ctxSel.value = ctxSel.options[0].value;
+    updateRunInfo(ctxSel.value);
+    populateYOptionsForKey(ctxSel.value);
+    populateTpOptionsForKey(ctxSel.value);
+    if (ySel.options.length) ySel.value = ySel.options[0].value;
+    renderForKey(ctxSel.value);
+  }
+}
 
-    buttons = []
-    for i, hw in enumerate(hardware_list):
-        vis = [False]*len(hardware_list)
-        vis[i] = True
-        buttons.append(dict(label=str(hw), method="update", args=[{"visible":vis},{"title":f"{metric} — {hw}"}]))
-    buttons.insert(0, dict(label="All", method="update", args=[{"visible":[True]*len(hardware_list)}, {"title":f"{metric} — All hardware"}]))
-
-    fig.update_layout(updatemenus=[dict(active=0, buttons=buttons, x=0, y=1.12, xanchor="left", yanchor="top")],
-                      title=f"{metric} — All hardware", margin=dict(t=80))
-    return fig.to_html(full_html=True, include_plotlyjs="cdn")
+// events
+modelSel.addEventListener('change', ()=>{
+  populateContextsForModel(modelSel.value);
+  if (ctxSel.options.length){ ctxSel.value = ctxSel.options[0].value; updateRunInfo(ctxSel.value); populateYOptionsForKey(ctxSel.value); populateTpOptionsForKey(ctxSel.value); if (ySel.options.length) ySel.value = ySel.options[0].value; renderForKey(ctxSel.value); }
+});
+ctxSel.addEventListener('change', ()=>{ updateRunInfo(ctxSel.value); populateYOptionsForKey(ctxSel.value); populateTpOptionsForKey(ctxSel.value); if (ySel.options.length) ySel.value = ySel.options[0].value; renderForKey(ctxSel.value); });
+ySel.addEventListener('change', ()=> renderForKey(ctxSel.value));
+xSel.addEventListener('change', ()=> renderForKey(ctxSel.value));
+precSel.addEventListener('change', ()=> renderForKey(ctxSel.value));
+tpSel.addEventListener('change', ()=> renderForKey(ctxSel.value));
+tpLine.addEventListener('change', ()=> renderForKey(ctxSel.value));
+</script>
+"""
+    html = header + controls + plot_div + body_js + main_js + "</body></html>"
+    return html
 
 def write_diagnostics(zip_files: List[str], files_in_data: List[str], records_count: int, sample_record: Optional[dict]):
     try:
@@ -166,7 +342,6 @@ def write_diagnostics(zip_files: List[str], files_in_data: List[str], records_co
         print(f"Warning: could not write diagnostics: {e}")
 
 def main():
-    # Note: Do NOT extract or modify data_zips/ or docs/data.
     zip_paths = sorted(p.name for p in (ROOT.glob("data_zips/*.zip")))
     data_files = list_data_files()
     data_file_names = [p.name for p in data_files]
@@ -190,7 +365,7 @@ def main():
         print(f"Warning: could not write static summary: {e}")
 
     # build and write HTML
-    html = build_plotly_html(df)
+    html = build_plotly_html(df, data_file_names)
     try:
         OUT_FILE.write_text(html, encoding="utf-8")
         print(f"Wrote {OUT_FILE}")
