@@ -72,21 +72,20 @@ jobs:
           tmp_out="${out}.abs"
           : > "$tmp_out"
           grep -Eo 'https?://github.com/[^/]+/[^/]+/actions/runs/[0-9]+' "$infile" >> "$tmp_out" || true
-          grep -Eo '/[^/]+/[^/]+/actions/runs/[0-9]+' "$infile" | sed 's|^|https://github.com|' >> "$tmp_out" || true
+          grep -Eo '/[^/]+/[^/]+/actions/runs/[0-9]+' "$infile" | sed 's|^|github.com|' >> "$tmp_out" || true
           sort -u "$tmp_out" > "$out" || true
           echo "Parsed run list written to $out"
           SH
           cat > .github/scripts/download_artifacts.sh <<'SH'
           #!/usr/bin/env bash
           set -euo pipefail
-          
           runs_file="$1"
           artifacts_dir="$2"
           docs_data="$3"
           secret_pat="$4"
-          
+
           mkdir -p "$artifacts_dir" "$docs_data" /tmp/im_runs
-          
+
           read -r -d '' ALLOWED <<'EOT' || true
           results_gptoss_1k1k.zip
           results_gptoss_8k1k.zip
@@ -98,7 +97,6 @@ jobs:
           results_dsr1_8k1k.zip
           results_dsr1_1k8k.zip
           EOT
-          
           is_allowed() {
             local name="$1"
             while IFS= read -r line; do
@@ -106,15 +104,15 @@ jobs:
             done <<< "$ALLOWED"
             return 1
           }
-          
+
           AUTH_HDR="Authorization: token ${secret_pat}"
-          
+
           fetch_all_artifacts_for_run() {
             local owner="$1" repo="$2" run_id="$3" out_json="$4"
             : > "$out_json"
             local page=1
             while :; do
-              api_url="https://api.github.com/repos/${owner}/${repo}/actions/runs/${run_id}/artifacts?per_page=100&page=${page}"
+              api_url="api.github.com/repos/${owner}/${repo}/actions/runs/${run_id}/artifacts?per_page=100&page=${page}"
               tmp="$(mktemp)"
               http_code=$(curl -sS -w "%{http_code}" -H "Accept: application/vnd.github+json" -H "$AUTH_HDR" "$api_url" -o "$tmp") || http_code="000"
               if [ "$http_code" != "200" ]; then
@@ -122,10 +120,7 @@ jobs:
                 rm -f "$tmp"
                 break
               fi
-              # write each artifact as a compact JSON line
-              jq -c '.artifacts[]' "$tmp" >> "$out_json" || true
-          
-              # check Link header for pagination
+              jq -c '.artifacts[]' "$tmp" >> "$out_json"
               link_hdr=$(curl -sI -H "Accept: application/vnd.github+json" -H "$AUTH_HDR" "$api_url" | tr -d '\r' | sed -n 's/^Link: //Ip' || true)
               rm -f "$tmp"
               if echo "$link_hdr" | grep -q 'rel="next"'; then
@@ -136,8 +131,7 @@ jobs:
               fi
             done
           }
-          
-          # iterate runs and download/extract allowed artifacts
+
           while IFS= read -r run_url || [ -n "$run_url" ]; do
             [ -z "$run_url" ] && continue
             owner=$(echo "$run_url" | awk -F'/' '{print $4}')
@@ -151,142 +145,128 @@ jobs:
               echo " No artifacts for run $run_id"
               continue
             fi
-          
-            while IFS= read -r art || [ -n "$art" ]; do
-              art_id=$(printf '%s' "$art" | jq -r '.id // empty')
-              art_name=$(printf '%s' "$art" | jq -r '.name // empty')
-              if [ -z "$art_id" ] || [ -z "$art_name" ]; then
-                echo "  Skipping malformed artifact JSON line"
-                continue
-              fi
-          
+
+            while IFS= read -r art; do
+              art_id=$(echo "$art" | jq -r '.id')
+              art_name=$(echo "$art" | jq -r '.name')
               norm_name="$art_name"
               case "$norm_name" in *.zip) ;; *) norm_name="${norm_name}.zip" ;; esac
-          
               if ! is_allowed "$norm_name"; then
                 echo " Skipping artifact not in allowed list: $art_name"
                 continue
               fi
-          
-              archive_url=$(printf '%s' "$art" | jq -r '.archive_download_url // empty')
-              if [ -z "$archive_url" ]; then
-                echo "  No archive url for artifact $art_id"
-                continue
-              fi
-          
+              archive_url=$(echo "$art" | jq -r '.archive_download_url')
               safe_name="${run_id}-${art_id}-${art_name}"
               out="${artifacts_dir}/${safe_name}.zip"
-              echo " Downloading artifact $art_name from run $run_id -> ${out}"
+              echo " Downloading artifact $art_name from run $run_id"
               http_code=$(curl -sSL -w "%{http_code}" -H "Accept: application/vnd.github+json" -H "$AUTH_HDR" -o "$out" "$archive_url" || echo "000")
-              if [ "$http_code" != "200" ] && [ "$http_code" != "302" ] && [ "$http_code" != "307" ]; then
+              if [[ "$http_code" != "200" && "$http_code" != "302" && "$http_code" != "307" ]]; then
                 echo "  Warning: failed to download artifact $art_id (http $http_code)"
                 rm -f "$out" || true
                 continue
               fi
-          
-              if [ -s "$out" ] && unzip -t "$out" >/dev/null 2>&1; then
+
+              if [[ -s "$out" ]] && unzip -t "$out" >/dev/null 2>&1; then
                 tmpd=$(mktemp -d)
                 unzip -q "$out" -d "$tmpd"
-                # extract only desired files; normalize dest names
-                find "$tmpd" -type f $ -name "agg_*.json" -o -name "*.json" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" $ -print0 \
-                  | while IFS= read -r -d '' f; do
-                      dest=$(basename "$f" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
-                      cp -f "$f" "${docs_data}/${dest}"
-                      echo "   -> extracted ${dest}"
-                    done
+                find "$tmpd" -type f $ -name "agg_*.json" -o -name "*.json" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" $ -print0 |
+                  while IFS= read -r -d '' f; do
+                    dest=$(basename "$f" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
+                    cp -f "$f" "${docs_data}/${dest}"
+                    echo "   -> extracted ${dest}"
+                  done
                 rm -rf "$tmpd"
               else
                 echo "  Warning: artifact $out not a valid zip or empty"
               fi
             done < "$tmp_art"
           done < "$runs_file"
-          
-          # --- global post-process (run once after all runs processed) ---
-          docs_data="${docs_data%/}"
-          older_dir="${docs_data}/older"
-          mkdir -p "$older_dir"
-          
-          # parse filenames like: RUN-ARTID-name   (both RUN and ARTID are integers)
+
+          # --------------------------------------------------------------
+          #  🧹  NEW CLEAN‑UP LOGIC (replaces the old block)
+          # --------------------------------------------------------------
+          # Files we always want to keep, even if they have no prefix
+          KEEP_ALWAYS=("data_index.json")   # add more names here if needed
+
+          DOCS_DATA="${docs_data%/}"
+          OLDER_DIR="${DOCS_DATA}/older"
+          mkdir -p "$OLDER_DIR"
+
+          # -----------------------------------------------------------------
+          # Helper: extract run‑id, artifact‑id and the “subtype” part of a name
+          # -----------------------------------------------------------------
           parse_prefixed() {
-            local bn="$1"
-            # Use stricter regex: start with digits-digits-
-            if [[ "$bn" =~ ^([0-9]+)-([0-9]+)-(.+)$ ]]; then
-              printf '%s\t%s\t%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
-              return 0
-            fi
-            return 1
+            local fn="$1"
+            [[ "$fn" =~ ^([0-9]+)-([0-9]+)-(.+)$ ]] || return 1
+            printf '%s\t%s\t%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
           }
-          
-          declare -A best_for_subtype
-          declare -A best_run
-          declare -A best_artid
-          non_prefixed_files=()
-          
-          # build a stable list of files: do NOT include files inside older/
-          mapfile -t allfiles < <(find "$docs_data" -maxdepth 1 -type f -printf '%P\n' | sort)
-          
-          echo "Found ${#allfiles[@]} files in ${docs_data} (excluding older/):"
-          for x in "${allfiles[@]}"; do echo "  - $x"; done
-          
-          for bn in "${allfiles[@]}"; do
-            f="${docs_data}/${bn}"
-            if parsed=$(parse_prefixed "$bn" 2>/dev/null); then
-              IFS=$'\t' read -r run artid namepart <<< "$parsed"
-              # normalize subtype: remove leading/trailing underscores, remove aggregation suffixes and final extension
-              subtype=$(printf '%s' "$namepart" \
-                | sed -E 's/__agg_.*$//' \
-                | sed -E 's/\.[^.]+$//' \
-                | sed -E 's/^_+//' \
-                | sed -E 's/_+$//')
-              run=${run:-0}; artid=${artid:-0}
-              prev_run=${best_run[$subtype]:--1}
-              prev_art=${best_artid[$subtype]:-0}
-              if (( run > prev_run )) || { (( run == prev_run )) && (( artid > prev_art )); }; then
+
+          # -----------------------------------------------------------------
+          # Scan the directory once, decide which file to keep for each subtype
+          # -----------------------------------------------------------------
+          declare -A best_file   # subtype → full path of the newest file
+          declare -A best_run    # subtype → run‑id (numeric)
+          declare -A best_art    # subtype → artifact‑id (numeric)
+          non_prefixed=()
+
+          while IFS= read -r -d '' f; do
+            bn=$(basename "$f")
+            # Skip files we always keep
+            for keep in "${KEEP_ALWAYS[@]}"; do
+              [[ "$bn" == "$keep" ]] && continue 2
+            done
+
+            if parsed=$(parse_prefixed "$bn"); then
+              IFS=$'\t' read -r run art subtype <<< "$parsed"
+              # Normalise subtype (remove possible __agg_… suffix and extension)
+              subtype=$(printf '%s' "$subtype" | sed -E 's/__agg_.*$//' | sed -E 's/\.[^.]+$//')
+              # Update the “best” entry for this subtype
+              if [[ -z "${best_run[$subtype]+x}" ]] ||
+                 (( run > best_run[$subtype] )) ||
+                 { (( run == best_run[$subtype] )) && (( art > best_art[$subtype] )); }; then
                 best_run[$subtype]="$run"
-                best_artid[$subtype]="$artid"
-                best_for_subtype[$subtype]="$f"
+                best_art[$subtype]="$art"
+                best_file[$subtype]="$f"
               fi
             else
-              non_prefixed_files+=("$f")
+              non_prefixed+=("$f")
             fi
-          done
-          
-          echo "Selected best files per subtype:"
-          for s in "${!best_for_subtype[@]}"; do
-            echo "  subtype: $s -> $(basename "${best_for_subtype[$s]}") (run=${best_run[$s]}, art=${best_artid[$s]})"
-          done
-          
-          # move prefixed files not selected
-          for bn in "${allfiles[@]}"; do
-            f="${docs_data}/${bn}"
-            if parse_prefixed "$bn" >/dev/null 2>&1; then
-              keep_this=0
-              for s in "${!best_for_subtype[@]}"; do
-                [ "${best_for_subtype[$s]}" = "$f" ] && keep_this=1 && break
-              done
-              if [ "$keep_this" -eq 1 ]; then
-                echo "Keeping prefixed file: ${bn}"
+          done < <(find "$DOCS_DATA" -maxdepth 1 -type f -print0)
+
+          # -----------------------------------------------------------------
+          # Move older prefixed files to the “older” folder
+          # -----------------------------------------------------------------
+          while IFS= read -r -d '' f; do
+            bn=$(basename "$f")
+            if parsed=$(parse_prefixed "$bn"); then
+              IFS=$'\t' read -r _ _ subtype <<< "$parsed"
+              subtype=$(printf '%s' "$subtype" | sed -E 's/__agg_.*$//' | sed -E 's/\.[^.]+$//')
+              if [[ "${best_file[$subtype]}" != "$f" ]]; then
+                echo "Moving older file: $bn → older/"
+                mv -n "$f" "$OLDER_DIR/" || echo "⚠️  Failed to move $bn"
               else
-                echo "Moving older prefixed file: ${bn} -> ${older_dir}/"
-                mv -f "$f" "${older_dir}/" || echo " Failed to move $f"
+                echo "Keeping newest file for subtype '$subtype': $bn"
               fi
             fi
-          done
-          
-          # delete non-prefixed files (these are unexpected)
-          for f in "${non_prefixed_files[@]:-}"; do
+          done < <(find "$DOCS_DATA" -maxdepth 1 -type f -print0)
+
+          # -----------------------------------------------------------------
+          # Delete non‑prefixed files (except those we explicitly keep)
+          # -----------------------------------------------------------------
+          for f in "${non_prefixed[@]}"; do
             bn=$(basename "$f")
-            echo "Deleting non-prefixed file: ${bn}"
-            rm -f "$f" || echo " Failed to delete $f"
-          done
-          
-          echo "Global post-process complete. Kept files:"
-          for s in "${!best_for_subtype[@]}"; do
-            echo "  - $(basename "${best_for_subtype[$s]}")"
+            # Skip always‑kept files
+            skip=0
+            for keep in "${KEEP_ALWAYS[@]}"; do
+              [[ "$bn" == "$keep" ]] && skip=1 && break
+            done
+            (( skip )) && continue
+            echo "Deleting stale file: $bn"
+            rm -f "$f"
           done
 
-
-          
+          echo "Clean‑up complete. Final contents of ${DOCS_DATA}:"
+          ls -1 "${DOCS_DATA}"
           SH
           chmod +x .github/scripts/*.sh
 
@@ -322,7 +302,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install python deps
-        run: pip install --upgrade pip && pip install pandas plotly
+        run: |
+          pip install --upgrade pip
+          pip install pandas plotly
 
       - name: Generate HTML
         run: |
@@ -345,3 +327,4 @@ jobs:
             git commit -m "nightly: update pages and data"
             git push origin HEAD
           fi
+          # Helper: extract run‑id, artifact‑id and the “subtype” part
