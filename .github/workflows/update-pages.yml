@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SECRET_PAT: ${{ secrets.SECRET_PAT }}
-      PUBLIC_PAGE: inferencemax.semianalysis.com
+      PUBLIC_PAGE: https://inferencemax.semianalysis.com/
       ARTIFACTS_DIR: data_zips
       DOCS_DATA: docs/data
       NODE_VERSION: "20"
