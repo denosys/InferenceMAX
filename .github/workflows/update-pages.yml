@@ -184,7 +184,8 @@ jobs:
 
           # --- global post-process (run once after all runs processed) ---
           docs_data="${docs_data%/}"
-          older_dir="${docs_data}/older"
+          # Cartella dove spostare i file più vecchi, fuori da docs/data
+          older_dir="${OUT_DIR}/older"   # OUT_DIR = docs (definito nella sezione env)
           mkdir -p "$older_dir"
 
           parse_prefixed() {
