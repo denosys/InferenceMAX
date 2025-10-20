@@ -384,7 +384,7 @@ jobs:
           echo "Run links:"
           sed -n '1,200p' /tmp/im_runs/list.txt || true
 
-            - name: Download allowed artifacts from runs
+      - name: Download allowed artifacts from runs
         env:
           SECRET_PAT: ${{ env.SECRET_PAT }}
           ARTIFACTS_DIR: ${{ env.ARTIFACTS_DIR }}
