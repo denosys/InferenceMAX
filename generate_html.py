@@ -136,11 +136,17 @@ def build_plotly_html(df: pd.DataFrame, data_file_names: List[str]) -> str:
                 r.setdefault("model", FILE_MAP[key][0])
                 r.setdefault("isl", FILE_MAP[key][1])
                 r.setdefault("osl", FILE_MAP[key][2])
+                # ensure both hw and hardware exist and are lowercase strings for client-side code
+                hw_val = r.get("hw") or r.get("hardware") or ""
+                hw_val = str(hw_val).lower()
+                r["hw"] = hw_val
+                r["hardware"] = hw_val
             # coerce numeric fields to strings where necessary for JSON
             client_map[key] = {
                 "columns": list(pd.json_normalize(recs).columns),
                 "records": recs
             }
+
     # default metric choices
     default_x = "median_e2el"
     # start building HTML + controls
