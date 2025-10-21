@@ -10,7 +10,7 @@ on:
       output_dir:
         description: 'Directory where compacted files will be saved (relative to repo root)'
         required: true
-        default: 'docs/data/compact'
+        default: 'docs/compact'
 
 jobs:
   compact:
