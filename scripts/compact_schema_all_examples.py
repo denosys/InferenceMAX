@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
+# compact_schema_all_examples_with_summary.py
 # Python 3.7+ compatible
+
 import sys
 import os
 import json
@@ -27,11 +29,8 @@ def add_example(store, key, val):
     t = detect_type(val)
     if entry["type"] != t:
         entry["type"] = "mixed"
-    # store example for non-numeric types; for numerics keep only type
-    if isinstance(val, (str, bool)) or isinstance(val, (int,)) and False:
-        # placeholder: numeric examples skipped by design
-        pass
-    if isinstance(val, str) or isinstance(val, bool):
+    # keep examples for non-numeric types (strings, bools, arrays, objects)
+    if isinstance(val, (str, bool)):
         if val not in entry["examples"]:
             entry["examples"].append(val)
     elif isinstance(val, list):
@@ -42,7 +41,7 @@ def add_example(store, key, val):
         sig = {"keys": sorted(list(val.keys()))}
         if sig not in entry["examples"]:
             entry["examples"].append(sig)
-    # don't append int/float examples (we only keep type)
+    # do not store int/float example values (only keep type)
 
 def analyze_item(store, obj):
     if isinstance(obj, dict):
@@ -69,10 +68,11 @@ def process_file(inpath, outpath):
     compact = compact_schema_from_items(items)
     with open(outpath, "w", encoding="utf-8") as f:
         json.dump(compact, f, ensure_ascii=False, indent=2)
+    return compact
 
 def main():
     if len(sys.argv) != 3:
-        print("Usage: compact_schema_all_examples.py <input_dir> <output_dir>")
+        print("Usage: compact_schema_all_examples_with_summary.py <input_dir> <output_dir>")
         sys.exit(1)
     input_dir = sys.argv[1]
     output_dir = sys.argv[2]
@@ -80,16 +80,30 @@ def main():
         print("Input directory not found:", input_dir)
         sys.exit(2)
     os.makedirs(output_dir, exist_ok=True)
-    for fn in os.listdir(input_dir):
+
+    summary = {"files": []}
+
+    for fn in sorted(os.listdir(input_dir)):
         if not fn.lower().endswith(".json"):
             continue
         inpath = os.path.join(input_dir, fn)
         outpath = os.path.join(output_dir, fn)
         try:
-            process_file(inpath, outpath)
+            compact = process_file(inpath, outpath)
+            summary["files"].append({
+                "path": inpath.replace("\\", "/"),
+                "filename": fn,
+                "schema": compact.get("schema", {})
+            })
             print("Processed:", fn)
         except Exception as e:
             print("Error processing", fn, ":", e)
+
+    # write summary file
+    summary_path = os.path.join(output_dir, "summary.json")
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+    print("Summary written to:", summary_path)
 
 if __name__ == "__main__":
     main()
