@@ -6,11 +6,11 @@ on:
       input_dir:
         description: 'Directory with input JSON files (relative to repo root)'
         required: true
-        default: 'data'
+        default: 'docs/data'
       output_dir:
         description: 'Directory where compacted files will be saved (relative to repo root)'
         required: true
-        default: 'data/compact'
+        default: 'docs/data/compact'
 
 jobs:
   compact:
