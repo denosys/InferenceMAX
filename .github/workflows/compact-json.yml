@@ -1,0 +1,29 @@
+name: Compact JSON files
+
+on:
+  workflow_dispatch:
+    inputs:
+      input_dir:
+        description: 'Directory with input JSON files (relative to repo root)'
+        required: true
+        default: 'data/input'
+      output_dir:
+        description: 'Directory where compacted files will be saved'
+        required: true
+        default: 'data/compact'
+jobs:
+  compact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.8'    # compatible with script for 3.7.9 semantics
+      - name: Install dependencies
+        run: pip install --upgrade pip
+      - name: Create output dir
+        run: mkdir -p ${{ github.event.inputs.output_dir }}
+      - name: Run compaction script
+        run: |
+          python scripts/compact_schema_all_examples.py "${{ github.event.inputs.input_dir }}" "${{ github.event.inputs.output_dir }}"
