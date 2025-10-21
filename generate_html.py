@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# generate_html.py (updated)
+# generate_html.py (upd)
 import os
 import json
 from pathlib import Path
