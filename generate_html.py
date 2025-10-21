@@ -112,9 +112,10 @@ def choose_metric_column(df: pd.DataFrame) -> Optional[str]:
 
 def _build_sample_plot_html(df: pd.DataFrame, metric: str) -> str:
     fig = go.Figure()
-    hw_list = sorted(df["hardware"].unique())
+    hw_col = "hardware" if "hardware" in df.columns else ("hw" if "hw" in df.columns else None)
+    hw_list = sorted(df[hw_col].unique()) if hw_col else []
     for hw in hw_list:
-        d = df[df["hardware"] == hw]
+        d = df[df[hw_col] == hw]
         x = d["run_id"].tolist() if "run_id" in d.columns else list(range(len(d)))
         y = d[metric].tolist()
         fig.add_trace(go.Scatter(x=x,y=y,mode="lines+markers",name=str(hw)))
@@ -131,12 +132,24 @@ def build_plotly_html(df: pd.DataFrame, data_file_names: List[str]) -> str:
             p = DATA_DIR / match
             j = load_json_safe(p)
             recs = normalize_records_from_json(j)
-            # normalize records same as server
+            # normalize records same as server and ensure 'conc' exists and is consistent
             for r in recs:
                 r.setdefault("model", FILE_MAP[key][0])
                 r.setdefault("isl", FILE_MAP[key][1])
                 r.setdefault("osl", FILE_MAP[key][2])
-            # coerce numeric fields to strings where necessary for JSON
+                # ensure conc key exists
+                if "conc" not in r:
+                    r["conc"] = None
+                else:
+                    # try to coerce numeric-ish conc to int/float (fallback: leave as-is)
+                    try:
+                        if r["conc"] is not None and r["conc"] != "":
+                            r["conc"] = int(r["conc"])
+                    except Exception:
+                        try:
+                            r["conc"] = float(r["conc"])
+                        except Exception:
+                            pass
             client_map[key] = {
                 "columns": list(pd.json_normalize(recs).columns),
                 "records": recs
@@ -241,40 +254,49 @@ function populateTpOptionsForKey(key){
   Array.from(seen).sort((a,b)=>Number(a)-Number(b)).forEach(v=>tpSel.appendChild(new Option(v,v)));
 }
 
-function buildTraces(records, xcol, ycol, connectTp, tpFilter, precFilter){
+function buildTraces(records, xcol, ycol, connectLines, tpFilter, precFilter){
   const traces = [];
   if (!records || !records.length) return traces;
   let recs = records.slice();
   if (precFilter && precFilter!=='all') recs = recs.filter(r=> (r.precision||'').toString().toLowerCase()===precFilter);
   if (tpFilter && tpFilter!=='all') recs = recs.filter(r=> String(r.tp)===String(tpFilter));
+
   const groups = {};
   for (const r of recs){
     const hw = (r.hw||r.hardware||'unknown').toString().toLowerCase();
-    groups[hw] = groups[hw]||[];
-    groups[hw].push(r);
+    const tp = (r.tp!==undefined && r.tp!=='') ? String(r.tp) : 'none';
+    groups[hw] = groups[hw] || {};
+    groups[hw][tp] = groups[hw][tp] || [];
+    groups[hw][tp].push(r);
   }
+
   const hwKeys = Object.keys(groups).sort();
   for (const hw of hwKeys){
-    const grp = groups[hw];
-    const hasTp = grp.some(r=> r.hasOwnProperty('tp') && r.tp!=='');
-    if (hasTp && connectTp){
-      const tmap = {};
-      for (const r of grp){
-        const tp = (r.tp!==undefined && r.tp!=='')? String(r.tp): 'none';
-        tmap[tp]=tmap[tp]||[];
-        tmap[tp].push(r);
-      }
-      const tpKeys = Object.keys(tmap).sort((a,b)=>{ const na=Number(a), nb=Number(b); if(!isNaN(na)&&!isNaN(nb)) return na-nb; return a.localeCompare(b);});
-      for (const tp of tpKeys){
-        const rows = tmap[tp];
-        const xs = rows.map(r=> Number(r[xcol])); const ys = rows.map(r=> Number(r[ycol]));
-        traces.push({x:xs,y:ys,mode:'lines+markers',name: hw + ' tp=' + tp, legendgroup: hw,
-                     text: rows.map(r=> 'tp=' + (r.tp||'') + ' model=' + (r.model||'')), hoverinfo:'text+x+y'});
-      }
-    } else {
-      const xs = grp.map(r=> Number(r[xcol])); const ys = grp.map(r=> Number(r[ycol]));
-      traces.push({x:xs,y:ys,mode:'markers',name: hw, legendgroup: hw,
-                   text: grp.map(r=> 'tp=' + (r.tp||'') + ' model=' + (r.model||'')), hoverinfo:'text+x+y'});
+    const tpKeys = Object.keys(groups[hw]).sort((a,b)=>{ const na=Number(a), nb=Number(b); if(!isNaN(na)&&!isNaN(nb)) return na-nb; return a.localeCompare(b);});
+    for (const tp of tpKeys){
+      let rows = groups[hw][tp];
+      rows = rows.filter(r=> r.conc!==undefined && r.conc!==null && r.conc!=='');
+      if (!rows.length) continue;
+      rows.sort((a,b)=> {
+        const na = Number(a.conc), nb = Number(b.conc);
+        if (!isNaN(na) && !isNaN(nb)) return na-nb;
+        return String(a.conc).localeCompare(String(b.conc));
+      });
+      const xs = rows.map(r=>{
+        const v = r[xcol]; if (v===undefined||v===null||v==='') return null; const n=Number(v); return isNaN(n)? v : n;
+      });
+      const ys = rows.map(r=>{
+        const v = r[ycol]; if (v===undefined||v===null||v==='') return null; const n=Number(v); return isNaN(n)? v : n;
+      });
+      traces.push({
+        x: xs,
+        y: ys,
+        mode: connectLines ? 'lines+markers' : 'markers',
+        name: hw + (tp!=='none' ? ' tp=' + tp : ''),
+        legendgroup: hw,
+        text: rows.map(r=> 'conc=' + (r.conc||'') + ' tp=' + (r.tp||'') + ' model=' + (r.model||'')),
+        hoverinfo:'text+x+y'
+      });
     }
   }
   return traces;
@@ -287,10 +309,10 @@ function renderForKey(key){
   const xcol = xSel.value || 'median_e2el';
   const ycol = ySel.value || '';
   if (!xcol || !ycol){ document.getElementById('plot_div').innerHTML = '<p>Missing X or Y</p>'; return; }
-  const connectTp = (tpLine.value==='yes');
+  const connectLines = (tpLine.value==='yes');
   const tpFilter = tpSel.value;
   const precFilter = precSel.value==='Tutte' ? 'all' : precSel.value.toLowerCase();
-  const traces = buildTraces(recs, xcol, ycol, connectTp, tpFilter, precFilter);
+  const traces = buildTraces(recs, xcol, ycol, connectLines, tpFilter, precFilter);
   const layout = {title: ycol + ' vs ' + xcol, xaxis:{title:xcol}, yaxis:{title:ycol}, legend:{orientation:'v'}};
   Plotly.newPlot('plot_div', traces, layout, {responsive:true});
 }
