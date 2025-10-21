@@ -308,7 +308,7 @@ function renderForKey(key){
   if (!xcol || !ycol){ document.getElementById('plot_div').innerHTML = '<p>Missing X or Y</p>'; return; }
   const connectTp = (tpLine.value==='yes');
   const tpFilter = tpSel.value;
-  const precFilter = precSel.value==='Tutte' ? 'all' : precSel.value.toLowerCase();
+  const precFilter = (precSel.value || 'all').toString().toLowerCase();
   const traces = buildTraces(recs, xcol, ycol, connectTp, tpFilter, precFilter);
   const layout = {title: ycol + ' vs ' + xcol, xaxis:{title:xcol}, yaxis:{title:ycol}, legend:{orientation:'v'}};
   Plotly.newPlot('plot_div', traces, layout, {responsive:true});
