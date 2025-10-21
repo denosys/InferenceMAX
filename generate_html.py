@@ -250,7 +250,7 @@ def build_client_payload(files: List[Path]) -> Dict[str, Any]:
 def build_plotly_html(client_map: Dict[str, Any]) -> str:
     """Construct interactive HTML with controls and embedded client_map JSON."""
     header = "<!doctype html><html><head><meta charset='utf-8'><title>InferenceMAX — Interactive</title>"
-    header += "<script src='cdn.plot.ly/plotly-latest.min.js'></script>"
+    header += "<script src='https://cdn.plot.ly/plotly-latest.min.js'></script>"
     header += "<style>"
     header += """
 body{font-family:system-ui,Arial,sans-serif;margin:12px;background:#fff;color:#111}
