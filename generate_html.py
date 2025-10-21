@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 # generate_html.py — updated 2025-10-21 (with client-side model canonicalization for menus)
-# Changelog (additional):
+# Changelog (summary):
+# - Robust parsing/normalization (hw/hardware, tp, conc, precision)
+# - FILE_MAP matching more permissive and model deduplication
+# - Client payload reduced for large datasets (lazy load)
+# - UI improvements: ordered selects, record counts, export CSV/PNG, log/linear axis toggle
+# - diagnostics.txt enriched
+# - Responsive CSS + color palette friendly to colorblind users
+# Note: keeps backward compatibility with provided sample JSON files.
 # - Add _model_canonical and _model_display to CLIENT_MAP (only for plotting/UI)
 # - Canonicalization rules applied only when building client payload; original JSON files untouched
 
