@@ -254,27 +254,40 @@ function buildTraces(records, xcol, ycol, connectTp, tpFilter, precFilter){
     groups[hw].push(r);
   }
   const hwKeys = Object.keys(groups).sort();
+  // helper median
+  const median = arr => { arr = arr.slice().sort((a,b)=>a-b); const m = arr.length; return m===0? NaN : (m%2? arr[(m-1)/2] : (arr[m/2-1]+arr[m/2])/2); };
+
   for (const hw of hwKeys){
     const grp = groups[hw];
-    const hasTp = grp.some(r=> r.hasOwnProperty('tp') && r.tp!=='');
-    if (hasTp && connectTp){
-      const tmap = {};
-      for (const r of grp){
-        const tp = (r.tp!==undefined && r.tp!=='')? String(r.tp): 'none';
-        tmap[tp]=tmap[tp]||[];
-        tmap[tp].push(r);
-      }
-      const tpKeys = Object.keys(tmap).sort((a,b)=>{ const na=Number(a), nb=Number(b); if(!isNaN(na)&&!isNaN(nb)) return na-nb; return a.localeCompare(b);});
-      for (const tp of tpKeys){
-        const rows = tmap[tp];
-        const xs = rows.map(r=> Number(r[xcol])); const ys = rows.map(r=> Number(r[ycol]));
-        traces.push({x:xs,y:ys,mode:'lines+markers',name: hw + ' tp=' + tp, legendgroup: hw,
-                     text: rows.map(r=> 'tp=' + (r.tp||'') + ' model=' + (r.model||'')), hoverinfo:'text+x+y'});
-      }
-    } else {
-      const xs = grp.map(r=> Number(r[xcol])); const ys = grp.map(r=> Number(r[ycol]));
-      traces.push({x:xs,y:ys,mode:'markers',name: hw, legendgroup: hw,
-                   text: grp.map(r=> 'tp=' + (r.tp||'') + ' model=' + (r.model||'')), hoverinfo:'text+x+y'});
+    // group by conc
+    const concMap = {};
+    for (const r of grp){
+      const conc = (r.conc!==undefined && r.conc!=='')? String(r.conc) : 'none';
+      concMap[conc] = concMap[conc] || [];
+      concMap[conc].push(r);
+    }
+    const concKeys = Object.keys(concMap).sort((a,b)=>{ const na=Number(a), nb=Number(b); if(!isNaN(na)&&!isNaN(nb)) return na-nb; return a.localeCompare(b);});
+    for (const conc of concKeys){
+      const rows = concMap[conc];
+      // collect numeric values for x and y
+      const xvals = rows.map(r=> Number(r[xcol])).filter(v=>!isNaN(v));
+      const yvals = rows.map(r=> Number(r[ycol])).filter(v=>!isNaN(v));
+      if (!xvals.length || !yvals.length) continue;
+      // use median per conc to produce a single representative point
+      const xmed = median(xvals);
+      const ymed = median(yvals);
+      if (isNaN(xmed) || isNaN(ymed)) continue;
+      traces.push({
+        x:[xmed],
+        y:[ymed],
+        mode:'markers+text',
+        name: hw + ' conc=' + conc,
+        text:[String(conc)],
+        textposition:'top center',
+        marker:{size:8},
+        hoverinfo:'text+x+y',
+        hovertext: rows.map(r=> 'conc=' + (r.conc||'') + ' tp=' + (r.tp||'') + ' run=' + (r.run_id||'')).join('\n')
+      });
     }
   }
   return traces;
