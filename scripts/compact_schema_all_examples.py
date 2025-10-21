@@ -5,7 +5,7 @@
 import sys
 import os
 import json
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 
 def detect_type(v):
     if v is None:
@@ -25,11 +25,11 @@ def detect_type(v):
     return "unknown"
 
 def add_example(store, key, val):
-    entry = store.setdefault(key, {"type": detect_type(val), "examples": []})
+    entry = store.setdefault(key, {"type": detect_type(val), "examples": [], "numeric_stats": None})
     t = detect_type(val)
-    if entry["type"] != t:
+    if entry["type"] != t and entry["type"] != "mixed":
         entry["type"] = "mixed"
-    # keep examples for non-numeric types (strings, bools, arrays, objects)
+    # store examples for non-numeric simple types
     if isinstance(val, (str, bool)):
         if val not in entry["examples"]:
             entry["examples"].append(val)
@@ -41,7 +41,16 @@ def add_example(store, key, val):
         sig = {"keys": sorted(list(val.keys()))}
         if sig not in entry["examples"]:
             entry["examples"].append(sig)
-    # do not store int/float example values (only keep type)
+    # for numeric types, update numeric_stats (min/max)
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        if entry.get("numeric_stats") is None:
+            entry["numeric_stats"] = {"min": val, "max": val}
+        else:
+            ns = entry["numeric_stats"]
+            if val < ns["min"]:
+                ns["min"] = val
+            if val > ns["max"]:
+                ns["max"] = val
 
 def analyze_item(store, obj):
     if isinstance(obj, dict):
@@ -58,6 +67,8 @@ def compact_schema_from_items(items):
         entry["type"] = v["type"]
         if v["examples"]:
             entry["examples"] = v["examples"]
+        if v.get("numeric_stats") is not None:
+            entry["numeric_stats"] = v["numeric_stats"]
         schema[k] = entry
     return {"schema": schema}
 
@@ -90,6 +101,7 @@ def main():
         outpath = os.path.join(output_dir, fn)
         try:
             compact = process_file(inpath, outpath)
+            # include numeric stats inline in schema for summary
             summary["files"].append({
                 "path": inpath.replace("\\", "/"),
                 "filename": fn,
