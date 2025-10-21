@@ -1,0 +1,59 @@
+name: generate-html-only
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  ARTIFACTS_DIR: data_zips
+  DOCS_DATA: docs/data
+  NODE_VERSION: "20"
+
+jobs:
+  generate-only:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js (optional, kept for parity)
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas plotly
+
+      - name: Generate HTML only
+        run: |
+          set -euo pipefail
+          mkdir -p docs "${{ env.ARTIFACTS_DIR }}"
+          python3 -u generate_html.py
+          find docs -maxdepth 2 -type f -print || true
+          ls -la "${{ env.DOCS_DATA }}" || true
+
+      - name: Commit and push generated site
+        env:
+          SECRET_PAT: ${{ secrets.SECRET_PAT }}
+        run: |
+          set -euo pipefail
+          git config --local user.email "actions@github.com"
+          git config --local user.name "GitHub Actions"
+          git remote set-url origin https://x-access-token:${{ secrets.SECRET_PAT }}@github.com/${{ github.repository }}.git
+          git add docs || true
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "manual: generate html"
+            git push origin HEAD
+          fi
