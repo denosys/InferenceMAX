@@ -1,0 +1,208 @@
+{
+  "schema": {
+    "hw": {
+      "type": "string",
+      "examples": [
+        "b200",
+        "mi355x",
+        "b200-trt",
+        "h100",
+        "h200-trt",
+        "h200",
+        "mi325x",
+        "mi300x"
+      ]
+    },
+    "tp": {
+      "type": "int",
+      "numeric_stats": {
+        "min": 1,
+        "max": 8
+      }
+    },
+    "conc": {
+      "type": "int",
+      "numeric_stats": {
+        "min": 4,
+        "max": 128
+      }
+    },
+    "model": {
+      "type": "string",
+      "examples": [
+        "nvidia/Llama-3.3-70B-Instruct-FP4",
+        "amd/Llama-3.3-70B-Instruct-MXFP4-Preview",
+        "nvidia/Llama-3.3-70B-Instruct-FP8",
+        "amd/Llama-3.3-70B-Instruct-FP8-KV"
+      ]
+    },
+    "framework": {
+      "type": "string",
+      "examples": [
+        "vllm",
+        "trt"
+      ]
+    },
+    "precision": {
+      "type": "string",
+      "examples": [
+        "fp4",
+        "fp8"
+      ]
+    },
+    "tput_per_gpu": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 431.52479655903505,
+        "max": 13015.817624226169
+      }
+    },
+    "output_tput_per_gpu": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 48.00371805581081,
+        "max": 1441.7035476027984
+      }
+    },
+    "mean_ttft": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.1873895151540637,
+        "max": 128.05752607666363
+      }
+    },
+    "median_ttft": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.16366519662551582,
+        "max": 133.5154109080322
+      }
+    },
+    "std_ttft": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.08135527621570407,
+        "max": 23.17757436036623
+      }
+    },
+    "p99_ttft": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.4911650778446346,
+        "max": 170.87364574315035
+      }
+    },
+    "mean_tpot": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.006417490471600992,
+        "max": 0.13671154100803956
+      }
+    },
+    "mean_intvty": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 7.3146714068653,
+        "max": 155.824150331855
+      }
+    },
+    "median_tpot": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.006447922890613286,
+        "max": 0.14090473208206422
+      }
+    },
+    "median_intvty": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 7.096993729192791,
+        "max": 155.08870328703424
+      }
+    },
+    "std_tpot": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.00012674485101604285,
+        "max": 0.022792572421402518
+      }
+    },
+    "std_intvty": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 43.8739419803702,
+        "max": 7889.866862310832
+      }
+    },
+    "p99_tpot": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.0067248310642758205,
+        "max": 0.18082535823117807
+      }
+    },
+    "p99_intvty": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 5.530197809543613,
+        "max": 148.70262025053376
+      }
+    },
+    "mean_itl": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.007135134431492779,
+        "max": 1.0709517345626922
+      }
+    },
+    "median_itl": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.006533927982673049,
+        "max": 0.37043930450454354
+      }
+    },
+    "std_itl": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.007931087021238886,
+        "max": 1.1585820919851684
+      }
+    },
+    "p99_itl": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.007132983263581985,
+        "max": 5.087031717970933
+      }
+    },
+    "mean_e2el": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 6.1166102404822595,
+        "max": 202.25776131881503
+      }
+    },
+    "median_e2el": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 6.047265109373257,
+        "max": 206.24715504562482
+      }
+    },
+    "std_e2el": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.43831797061891337,
+        "max": 28.569505004128903
+      }
+    },
+    "p99_e2el": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 7.0445420357258985,
+        "max": 249.60489562121225
+      }
+    }
+  }
+}
