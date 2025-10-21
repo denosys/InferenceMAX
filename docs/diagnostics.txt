@@ -34,6 +34,5 @@ sample_record:
   "isl": "1k",
   "osl": "1k",
   "file_key": "results_70b_1k1k",
-  "run_id": 0,
   "mtp": NaN
 }
