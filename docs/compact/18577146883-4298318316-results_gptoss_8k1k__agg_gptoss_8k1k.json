@@ -1,0 +1,204 @@
+{
+  "schema": {
+    "hw": {
+      "type": "string",
+      "examples": [
+        "h200-trt",
+        "mi300x",
+        "b200",
+        "h200",
+        "b200-trt",
+        "mi325x",
+        "mi355x",
+        "h100"
+      ]
+    },
+    "tp": {
+      "type": "int",
+      "numeric_stats": {
+        "min": 1,
+        "max": 8
+      }
+    },
+    "conc": {
+      "type": "int",
+      "numeric_stats": {
+        "min": 4,
+        "max": 64
+      }
+    },
+    "model": {
+      "type": "string",
+      "examples": [
+        "openai/gpt-oss-120b"
+      ]
+    },
+    "framework": {
+      "type": "string",
+      "examples": [
+        "trt",
+        "vllm"
+      ]
+    },
+    "precision": {
+      "type": "string",
+      "examples": [
+        "fp4"
+      ]
+    },
+    "tput_per_gpu": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 814.1522050058172,
+        "max": 31168.813562967887
+      }
+    },
+    "output_tput_per_gpu": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 90.56798871178947,
+        "max": 3457.907843552124
+      }
+    },
+    "mean_ttft": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.08253249450208386,
+        "max": 6.289814354084956
+      }
+    },
+    "median_ttft": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.06837050002650358,
+        "max": 4.390134091023356
+      }
+    },
+    "std_ttft": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.029355093296710818,
+        "max": 4.607611587792149
+      }
+    },
+    "p99_ttft": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.18461406881338915,
+        "max": 27.551598795661707
+      }
+    },
+    "mean_tpot": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.0027072040405491824,
+        "max": 0.04770224123561133
+      }
+    },
+    "mean_intvty": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 20.963375600336917,
+        "max": 369.38479147554034
+      }
+    },
+    "median_tpot": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.0027146080274019525,
+        "max": 0.04897443470093639
+      }
+    },
+    "median_intvty": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 20.418816594954592,
+        "max": 368.37730895427353
+      }
+    },
+    "std_tpot": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 4.691306547012012e-05,
+        "max": 0.005377685465468645
+      }
+    },
+    "std_intvty": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 185.9536052119876,
+        "max": 21316.023371717634
+      }
+    },
+    "p99_tpot": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.002784460259537554,
+        "max": 0.0564361721717702
+      }
+    },
+    "p99_intvty": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 17.719132278432724,
+        "max": 359.1360288137425
+      }
+    },
+    "mean_itl": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.0032720749627982017,
+        "max": 0.6094926070527897
+      }
+    },
+    "median_itl": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.003143517067655921,
+        "max": 0.3901236727833748
+      }
+    },
+    "std_itl": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.0023487556385371464,
+        "max": 0.4294320954164335
+      }
+    },
+    "p99_itl": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.0035946794785559183,
+        "max": 1.990200485810638
+      }
+    },
+    "mean_e2el": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 2.5717634535496474,
+        "max": 45.6949631382915
+      }
+    },
+    "median_e2el": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 2.5497000199975446,
+        "max": 45.850226954557
+      }
+    },
+    "std_e2el": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 0.17944533482097064,
+        "max": 7.006744819561934
+      }
+    },
+    "p99_e2el": {
+      "type": "float",
+      "numeric_stats": {
+        "min": 2.929770568270469,
+        "max": 66.01280765403064
+      }
+    }
+  }
+}
