@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-# scripts/compact_schema_all_examples.py
+# compact_schema_all_examples_with_summary.py
 # Python 3.7+ compatible
+
 import sys
 import os
 import json
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 
 def detect_type(v):
     if v is None:
@@ -28,8 +29,8 @@ def add_example(store, key, val):
     t = detect_type(val)
     if entry["type"] != t and entry["type"] != "mixed":
         entry["type"] = "mixed"
-    # keep examples for strings and booleans
-    if isinstance(val, str) or isinstance(val, bool):
+    # store examples for non-numeric simple types
+    if isinstance(val, (str, bool)):
         if val not in entry["examples"]:
             entry["examples"].append(val)
     elif isinstance(val, list):
@@ -40,7 +41,7 @@ def add_example(store, key, val):
         sig = {"keys": sorted(list(val.keys()))}
         if sig not in entry["examples"]:
             entry["examples"].append(sig)
-    # numeric stats for ints/floats
+    # for numeric types, update numeric_stats (min/max)
     if isinstance(val, (int, float)) and not isinstance(val, bool):
         if entry.get("numeric_stats") is None:
             entry["numeric_stats"] = {"min": val, "max": val}
@@ -69,33 +70,20 @@ def compact_schema_from_items(items):
         if v.get("numeric_stats") is not None:
             entry["numeric_stats"] = v["numeric_stats"]
         schema[k] = entry
-    return schema
-
-def schema_signature(schema):
-    # deterministic signature for schema: tuple of (key,type) sorted by key and include numeric_stats keys presence
-    parts = []
-    for k in sorted(schema.keys()):
-        e = schema[k]
-        t = e.get("type","")
-        ns = e.get("numeric_stats")
-        examples = e.get("examples")
-        part = (k, t, bool(ns), tuple(examples) if examples is not None else None)
-        parts.append(part)
-    return tuple(parts)
+    return {"schema": schema}
 
 def process_file(inpath, outpath):
     with open(inpath, "r", encoding="utf-8") as f:
         data = json.load(f)
     items = data if isinstance(data, list) else [data]
-    schema = compact_schema_from_items(items)
-    outdata = {"schema": schema}
+    compact = compact_schema_from_items(items)
     with open(outpath, "w", encoding="utf-8") as f:
-        json.dump(outdata, f, ensure_ascii=False, indent=2)
-    return schema
+        json.dump(compact, f, ensure_ascii=False, indent=2)
+    return compact
 
 def main():
     if len(sys.argv) != 3:
-        print("Usage: compact_schema_all_examples.py <input_dir> <output_dir>")
+        print("Usage: compact_schema_all_examples_with_summary.py <input_dir> <output_dir>")
         sys.exit(1)
     input_dir = sys.argv[1]
     output_dir = sys.argv[2]
@@ -104,9 +92,7 @@ def main():
         sys.exit(2)
     os.makedirs(output_dir, exist_ok=True)
 
-    schema_pool = OrderedDict()   # id -> schema
-    sig_to_id = {}
-    files_list = []
+    summary = {"files": []}
 
     for fn in sorted(os.listdir(input_dir)):
         if not fn.lower().endswith(".json"):
@@ -114,28 +100,22 @@ def main():
         inpath = os.path.join(input_dir, fn)
         outpath = os.path.join(output_dir, fn)
         try:
-            schema = process_file(inpath, outpath)
-            sig = schema_signature(schema)
-            if sig in sig_to_id:
-                sid = sig_to_id[sig]
-            else:
-                sid = "s{}".format(len(schema_pool)+1)
-                sig_to_id[sig] = sid
-                schema_pool[sid] = schema
-            files_list.append({
+            compact = process_file(inpath, outpath)
+            # include numeric stats inline in schema for summary
+            summary["files"].append({
                 "path": inpath.replace("\\", "/"),
                 "filename": fn,
-                "schema_id": sid
+                "schema": compact.get("schema", {})
             })
-            print("Processed:", fn, "-> schema_id", sid)
+            print("Processed:", fn)
         except Exception as e:
             print("Error processing", fn, ":", e)
 
-    summary = {"schema_pool": schema_pool, "files": files_list}
-    summary_path = os.path.join(output_dir, "summary_compact.json")
+    # write summary file
+    summary_path = os.path.join(output_dir, "summary.json")
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
-    print("Wrote summary_compact.json to:", summary_path)
+    print("Summary written to:", summary_path)
 
 if __name__ == "__main__":
     main()
