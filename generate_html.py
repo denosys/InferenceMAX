@@ -288,19 +288,36 @@ function buildTraces(records, xcol, ycol, connectLines, tpFilter, precFilter){
       const ys = rows.map(r=>{
         const v = r[ycol]; if (v===undefined||v===null||v==='') return null; const n=Number(v); return isNaN(n)? v : n;
       });
+
+      const texts = rows.map(r=>{
+        const gpu = (r.hw||r.hardware||'unknown');
+        const nGPU = (r.tp===undefined || r.tp==='' ) ? 'N/A' : String(r.tp) + ' GPU';
+        const conc = (r.conc===undefined || r.conc===null || r.conc==='' ) ? 'N/A' : String(r.conc) + ' Users';
+        const xv = (r[xcol]===undefined || r[xcol]===null) ? '' : r[xcol];
+        const yv = (r[ycol]===undefined || r[ycol]===null) ? '' : r[ycol];
+        return [
+          'GPU: ' + gpu,
+          'N GPU: ' + nGPU,
+          'Concurrency request: ' + conc,
+          'X: ' + xv,
+          'Y: ' + yv
+        ].join('<br>');
+      });
+
       traces.push({
         x: xs,
         y: ys,
         mode: connectLines ? 'lines+markers' : 'markers',
         name: hw + (tp!=='none' ? ' tp=' + tp : ''),
         legendgroup: hw,
-        text: rows.map(r=> 'conc=' + (r.conc||'') + ' tp=' + (r.tp||'') + ' model=' + (r.model||'')),
-        hoverinfo:'text+x+y'
+        text: texts,
+        hoverinfo: 'text+x+y'
       });
     }
   }
   return traces;
 }
+
 
 function renderForKey(key){
   const payload = CLIENT_MAP[key];
