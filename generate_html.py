@@ -308,7 +308,7 @@ body{font-family:system-ui,Arial,sans-serif;margin:12px;background:#fff;color:#1
     plot_div = "<div id='plot_div'></div>"
 
     # embed client_map
-    body_js = f\"<script>const CLIENT_MAP = {json.dumps(client_map, ensure_ascii=False)};</script>\"
+    body_js = f"<script>const CLIENT_MAP = {json.dumps(client_map, ensure_ascii=False)};</script>"
 
     # main JS
     main_js = """
