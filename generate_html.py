@@ -558,7 +558,7 @@ function buildTraces(records,xcol,ycol,connectLines,tpFilter,precFilter){
         x: xs,
         y: ys,
         mode: connectLines ? 'lines+markers+text' : 'markers+text',
-        name: displayName + (tp!=='none' ? ' tp='+tp : ''),
+        name: hw + (tp!=='none' ? ' tp='+tp : ''),
         legendgroup: hw,
         marker: {color: color, size:8},
         line: {shape:'linear', color: color},
