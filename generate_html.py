@@ -516,66 +516,77 @@ function buildTraces(records,xcol,ycol,connectLines,tpFilter,precFilter){
   let recs = records.slice();
   if(precFilter && precFilter!=='all') recs = recs.filter(r=> (String(r.precision||'').toLowerCase())===precFilter);
   if(tpFilter && tpFilter!=='all') recs = recs.filter(r=> String(r.tp)===String(tpFilter));
-  const groups = {};
-  recs.forEach(r=>{
-    const hw = (r.hw||r.hardware||'unknown').toString().toLowerCase();
-    const tp = (r.tp===undefined||r.tp==='') ? 'none' : String(r.tp);
-    groups[hw] = groups[hw]||{};
-    groups[hw][tp] = groups[hw][tp]||[];
-    groups[hw][tp].push(r);
+  
+const groups = {};
+recs.forEach(r=>{
+  const hw = (r.hw||r.hardware||'unknown').toString().toLowerCase();
+  const tp = (r.tp===undefined||r.tp==='') ? 'none' : String(r.tp);
+  const prec = (r.precision===undefined||r.precision===null||r.precision==='') ? 'fp8' : String(r.precision).toLowerCase();
+  // include precision in grouping only when precision filter is "all"
+  const includePrec = (precFilter === 'all' || !precFilter);
+  const groupKey = `${hw}||tp=${tp}` + (includePrec ? `||prec=${prec}` : '');
+  if(!groups[hw]) groups[hw] = {};
+  if(!groups[hw][groupKey]) groups[hw][groupKey] = {tp: tp, prec: (includePrec?prec:''), rows: []};
+  groups[hw][groupKey].rows.push(r);
+});
+
+const hwKeys = Object.keys(groups).sort();
+const traces = [];
+const colorPalette = ['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd','#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf'];
+let colorIdx = 0;
+const textPositions = ['top center','bottom center','middle left','middle right'];
+
+hwKeys.forEach(hw=>{
+  const groupKeys = Object.keys(groups[hw]).sort((a,b)=>{
+    // sort by tp numerically when possible, otherwise lexicographically
+    const aTp = groups[hw][a].tp, bTp = groups[hw][b].tp;
+    const na = Number(aTp), nb = Number(bTp);
+    if(!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
+    return String(a).localeCompare(String(b));
   });
-  const hwKeys = Object.keys(groups).sort();
-  const traces = [];
-  const colorPalette = ['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd','#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf'];
-  let colorIdx = 0;
-  const textPositions = ['top center','bottom center','middle left','middle right'];
-  hwKeys.forEach(hw=>{
-    const tpKeys = Object.keys(groups[hw]).sort((a,b)=>{
-      const na=Number(a), nb=Number(b);
-      if(!Number.isNaN(na) && !Number.isNaN(nb)) return na-nb;
-      return a.localeCompare(b);
+  groupKeys.forEach(gk=>{
+    const group = groups[hw][gk];
+    const rows = group.rows;
+    if(!rows || !rows.length) return;
+    // sort by concurrency if present
+    rows.sort((a,b)=>{
+      const na = Number(a.conc), nb = Number(b.conc);
+      if(!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
+      return String(a.conc||'').localeCompare(String(b.conc||''));
     });
-    tpKeys.forEach(tp=>{
-      const rows = groups[hw][tp];
-      if(!rows || !rows.length) return;
-      rows.sort((a,b)=>{
-        const na=Number(a.conc), nb=Number(b.conc);
-        if(!isNaN(na) && !isNaN(nb)) return na-nb;
-        return String(a.conc||'').localeCompare(String(b.conc||''));
-      });
-      const xs = rows.map(r=>{ const v=r[xcol]; const n=Number(v); return Number.isNaN(n)? v : n; });
-      const ys = rows.map(r=>{ const v=r[ycol]; const n=Number(v); return Number.isNaN(n)? v : n; });
-      const hovertexts = rows.map(r=>{
-        const gpu = (r.hw||r.hardware||'unknown');
-        const nGPU = (r.tp===undefined||r.tp=='')?'N/A':String(r.tp)+' GPU';
-        const conc = (r.conc===undefined||r.conc===null||r.conc=='')?'N/A':String(r.conc);
-        const xv = (r[xcol]===undefined||r[xcol]===null)?'':r[xcol];
-        const yv = (r[ycol]===undefined||r[ycol]===null)?'':r[ycol];
-        return ['GPU: '+gpu,'TP: '+nGPU,'Concurrency: '+conc,'X: '+xv,'Y: '+yv].join('<br>');
-      });
-      const smallLabels = rows.map(r=> (r.conc!==undefined && r.conc!==null && r.conc!=='') ? String(r.conc) : '');
-      const tpos = smallLabels.map((_,i)=> textPositions[i % textPositions.length]);
-      const color = colorPalette[colorIdx % colorPalette.length];
-      colorIdx++;
-      const displayName = (rows[0] && rows[0]._model_display) ? rows[0]._model_display : (rows[0] && rows[0].model) || hw;
-      traces.push({
-        x: xs,
-        y: ys,
-        mode: connectLines ? 'lines+markers+text' : 'markers+text',
-        name: hw + (tp!=='none' ? ' tp='+tp : ''),
-        legendgroup: hw,
-        marker: {color: color, size:8},
-        line: {shape:'linear', color: color},
-        text: smallLabels,
-        textposition: tpos,
-        textfont: {size:9, color: '#222'},
-        hoverinfo: 'text',
-        hovertext: hovertexts
-      });
+    const xs = rows.map(r=>{ const v=r[xcol]; const n=Number(v); return Number.isNaN(n)? v : n; });
+    const ys = rows.map(r=>{ const v=r[ycol]; const n=Number(v); return Number.isNaN(n)? v : n; });
+    const hovertexts = rows.map(r=>{
+      const gpu = (r.hw||r.hardware||'unknown');
+      const nGPU = (r.tp===undefined||r.tp=='')?'N/A':String(r.tp)+' GPU';
+      const conc = (r.conc===undefined||r.conc===null||r.conc=='')?'N/A':String(r.conc);
+      const xv = (r[xcol]===undefined||r[xcol]===null)?'':r[xcol];
+      const yv = (r[ycol]===undefined||r[ycol]===null)?'':r[ycol];
+      return ['GPU: '+gpu,'TP: '+nGPU,'Concurrency: '+conc,'X: '+xv,'Y: '+yv].join('<br>');
+    });
+    const smallLabels = rows.map(r=> (r.conc!==undefined && r.conc!==null && r.conc!=='') ? String(r.conc) : '');
+    const tpos = smallLabels.map((_,i)=> textPositions[i % textPositions.length]);
+    const color = colorPalette[colorIdx % colorPalette.length];
+    colorIdx++;
+    const displayName = (rows[0] && rows[0]._model_display) ? rows[0]._model_display : (rows[0] && rows[0].model) || hw;
+    const precLabel = group.prec ? ' prec=' + group.prec : '';
+    const name = displayName + (group.tp!=='none' ? ' tp='+group.tp : '') + precLabel;
+    traces.push({
+      x: xs,
+      y: ys,
+      mode: connectLines ? 'lines+markers+text' : 'markers+text',
+      name: name,
+      legendgroup: hw,
+      marker: {color: color, size:8},
+      line: {shape:'linear', color: color},
+      text: smallLabels,
+      textposition: tpos,
+      textfont: {size:9, color: '#222'},
+      hoverinfo: 'text',
+      hovertext: hovertexts
     });
   });
-  return traces;
-}
+});
 
 /* Render plot for a selected context key */
 function renderForKey(key){
