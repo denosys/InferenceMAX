@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# generate_html.py — updated 2025-10-21
+# generate_html.py — updated 2025-10-21 (fixed: CDN, lazy-load menu population, client-side model canonicalization sample)
 # Changelog (summary):
 # - Robust parsing/normalization (hw/hardware, tp, conc, precision)
 # - FILE_MAP matching more permissive and model deduplication
@@ -8,12 +8,16 @@
 # - diagnostics.txt enriched
 # - Responsive CSS + color palette friendly to colorblind users
 # Note: keeps backward compatibility with provided sample JSON files.
+# - Add _model_canonical and _model_display to CLIENT_MAP (only for plotting/UI)
+# - Canonicalization rules applied only when building client payload; original JSON files untouched
+# - Ensure model/context selects are populated even when many datasets are lazy-loaded
 
 import json
 import os
 import math
 from pathlib import Path
 from typing import List, Any, Optional, Dict
+import re
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parent
@@ -112,6 +116,51 @@ def coerce_record_types(r: dict) -> dict:
                 pass
     return r
 
+# Canonicalization utilities (only used for UI/plotting payload)
+_CANONICAL_MAP = {
+    # explicit canonical targets
+    "llama-3.3-70b-instruct": "Llama-3.3-70B-Instruct",
+    "deepseek-r1-0528": "DeepSeek-R1-0528",
+    "gpt-oss-120b": "gpt-oss-120b",
+}
+
+_DISPLAY_MAP = {
+    "Llama-3.3-70B-Instruct": "Llama-3.3-70B-Instruct",
+    "DeepSeek-R1-0528": "DeepSeek-R1-0528",
+    "gpt-oss-120b": "gpt-oss 120B",
+}
+
+_suffix_re = re.compile(r"(?:[-_/]?(?:fp8|fp4|mxfp4|mxpf4|kv|preview|v\d+|-v\d+))+$", re.IGNORECASE)
+_vendor_prefix_re = re.compile(r"^(?:nvidia/|amd/|deepseek-ai/|openai/|/mnt/.*?/models/)", re.IGNORECASE)
+_clean_re = re.compile(r"[_\s]+")
+
+def canonicalize_model_name(raw: Optional[str]) -> str:
+    if not raw:
+        return "unknown"
+    s = str(raw).strip()
+    s_low = s.lower()
+    # remove vendor/path prefixes
+    s_low = _vendor_prefix_re.sub("", s_low)
+    # strip known suffixes like -fp8, -fp4, -kv, -preview, -v2, etc.
+    s_low = _suffix_re.sub("", s_low)
+    # normalize separators
+    s_low = s_low.replace("\\", "-").replace("/", "-")
+    s_low = _clean_re.sub("-", s_low)
+    s_low = re.sub(r"-{2,}", "-", s_low).strip("-")
+    # map known patterns
+    if re.search(r"llama.*3.*70b.*instruct", s_low):
+        return _CANONICAL_MAP["llama-3.3-70b-instruct"]
+    if re.search(r"deepseek.*r1.*0528", s_low):
+        return _CANONICAL_MAP["deepseek-r1-0528"]
+    if "gpt-oss-120b" in s_low or "gptoss-120b" in s_low:
+        return _CANONICAL_MAP["gpt-oss-120b"]
+    # fallback: return cleaned candidate
+    candidate = s_low if s_low else s
+    return candidate
+
+def display_name_for_canonical(canon: str) -> str:
+    return _DISPLAY_MAP.get(canon, canon.replace("-", " "))
+
 def build_dataframe_from_files(files: List[Path]) -> pd.DataFrame:
     """Build a normalized pandas DataFrame from json files and infer metadata."""
     recs_all = []
@@ -167,25 +216,56 @@ def build_client_payload(files: List[Path]) -> Dict[str, Any]:
     - include columns/schema for each dataset
     - embed records only when under EMBED_RECORDS_LIMIT
     - otherwise include record_count and path for lazy load
+    - add per-record derived fields (only in payload): _model_canonical, _model_display
+    - add 'sample' metadata for lazy entries so client can populate menus
     """
     client_map = {}
     for p in files:
         key = next((k for k in FILE_MAP if k in p.name), None)
         j = load_json_safe(p)
         recs = normalize_records_from_json(j)
-        # inject metadata
+        # inject metadata from FILE_MAP when matched (but do not overwrite original model field)
         if key:
             m, isl, osl = FILE_MAP[key]
             for r in recs:
                 r.setdefault("model", m); r.setdefault("isl", isl); r.setdefault("osl", osl); r.setdefault("file_key", key)
-        # coerce each record minimally
-        recs = [coerce_record_types(r) for r in recs]
+        # coerce each record minimally; copy to avoid mutating original objects
+        recs = [coerce_record_types(dict(r)) for r in recs]
+        # derive model canonical/display only in payload
+        for r in recs:
+            orig = r.get("model") or ""
+            canon = canonicalize_model_name(orig)
+            r["_model_canonical"] = canon
+            r["_model_display"] = display_name_for_canonical(canon)
+            r["model_original"] = orig
         cols = list(pd.json_normalize(recs).columns) if recs else []
         entry = {"columns": cols, "record_count": len(recs), "filename": p.name}
         if len(recs) <= EMBED_RECORDS_LIMIT:
             entry["records"] = recs
+            # also store a sample for quick client-side inspection
+            entry["sample"] = recs[0] if recs else {}
         else:
             entry["records"] = None  # will be lazy-loaded client-side via fetch of /docs/data/<filename>
+            # create a sample derived from FILE_MAP or filename so client can populate menus without fetching
+            sample = {}
+            if key:
+                m, isl, osl = FILE_MAP[key]
+                canon = canonicalize_model_name(m)
+                sample["_model_canonical"] = canon
+                sample["_model_display"] = display_name_for_canonical(canon)
+                sample["model"] = m
+                sample["isl"] = isl
+                sample["osl"] = osl
+            else:
+                # best-effort from filename
+                stem = p.stem
+                # replace separators for human-readable
+                inferred = re.sub(r'[-_.]+', ' ', stem)
+                canon = canonicalize_model_name(inferred)
+                sample["_model_canonical"] = canon
+                sample["_model_display"] = display_name_for_canonical(canon)
+                sample["model"] = inferred
+            entry["sample"] = sample
         # store under file_key when available, otherwise filename base
         map_key = key or p.stem
         client_map[map_key] = entry
@@ -194,6 +274,7 @@ def build_client_payload(files: List[Path]) -> Dict[str, Any]:
 def build_plotly_html(client_map: Dict[str, Any]) -> str:
     """Construct interactive HTML with controls and embedded client_map JSON."""
     header = "<!doctype html><html><head><meta charset='utf-8'><title>InferenceMAX — Interactive</title>"
+    # fixed CDN URL
     header += "<script src='https://cdn.plot.ly/plotly-latest.min.js'></script>"
     header += "<style>"
     header += """
@@ -238,68 +319,144 @@ tpSel=$id('tp_sel'), tpLine=$id('tp_line'), ySel=$id('y_sel'), xSel=$id('x_sel')
 yscaleSel=$id('yscale_sel'), exportCsv=$id('export_csv'), exportPng=$id('export_png'),
 resetView=$id('reset_view'), countShown=$id('count_shown'), countTotal=$id('count_total');
 
+/* Helper canonicalization mirroring server-side heuristics */
+function canonicalizeModelFromString(raw){
+  if(!raw) return 'unknown';
+  let s = String(raw).trim().toLowerCase();
+  s = s.replace(/^(nvidia\/|amd\/|deepseek-ai\/|openai\/|\/mnt\/.*?\/models\/)/,'');
+  s = s.replace(/(\\-?fp8|\\-?fp4|\\-?mxfp4|\\-?mxpf4|\\-?kv|\\-?preview|\\-v?\\d+)$/i,'');
+  s = s.replace(/[\\/,_\\s]+/g,'-').replace(/-+/g,'-').replace(/(^-+|-+$)/g,'');
+  if(/llama.*3.*70b.*instruct/.test(s)) return 'Llama-3.3-70B-Instruct';
+  if(/deepseek.*r1.*0528/.test(s)) return 'DeepSeek-R1-0528';
+  if(s.indexOf('gpt-oss-120b')!==-1 || s.indexOf('gptoss-120b')!==-1) return 'gpt-oss-120b';
+  return s || raw;
+}
+
+/* Build models map robustly even when many entries are lazy-loaded */
 function buildModels(){
-  // Build map: model_name -> [{isl, osl, key, filename, record_count}]
-  const models = {};
+  const models = {}; // canon -> {display, contexts:Set}
   for(const key of Object.keys(CLIENT_MAP)){
     const meta = CLIENT_MAP[key];
-    const recs = meta.records || [];
-    const sample = recs.length? recs[0] : {};
-    const name = sample.model || key;
-    const isl = sample.isl || '';
-    const osl = sample.osl || '';
-    models[name] = models[name] || [];
-    models[name].push({isl, osl, key});
+    const recs = meta.records;
+    if(recs && recs.length){
+      recs.forEach(r=>{
+        const canon = r._model_canonical || (r.model || 'unknown');
+        const display = r._model_display || (r.model || canon);
+        if(!models[canon]) models[canon] = {display: display, contexts: new Set()};
+        models[canon].contexts.add(String(key));
+      });
+    } else if(meta.sample && (meta.sample._model_canonical || meta.sample.model)){
+      const s = meta.sample;
+      const canon = s._model_canonical || canonicalizeModelFromString(s.model || '');
+      const display = s._model_display || (s.model || canon);
+      if(!models[canon]) models[canon] = {display: display, contexts: new Set()};
+      models[canon].contexts.add(String(key));
+    } else {
+      // fallback: infer from filename or key so UI still has entries when everything is lazy
+      const fallbackRaw = meta.filename ? meta.filename.replace(/[-_.]+/g,' ') : (key || 'unknown');
+      const canon = canonicalizeModelFromString(fallbackRaw);
+      const display = canon;
+      if(!models[canon]) models[canon] = {display: display, contexts: new Set()};
+      models[canon].contexts.add(String(key));
+    }
   }
   return models;
 }
-const MODELS = buildModels();
 
+/* Populate model select from models map; fallback to CLIENT_MAP keys if empty */
 function populateModelSelect(){
   modelSel.innerHTML = '';
-  const names = Object.keys(MODELS).sort();
-  for(const n of names) modelSel.appendChild(new Option(n,n));
+  const models = buildModels();
+  const entries = Object.keys(models).map(k=>({canon:k, display: models[k].display, contexts: models[k].contexts}));
+  entries.sort((a,b)=> String(a.display).localeCompare(String(b.display)));
+  entries.forEach(e=>{
+    modelSel.appendChild(new Option(e.display, e.canon));
+  });
+  if(!modelSel.options.length){
+    // fallback: show filenames/keys
+    Object.keys(CLIENT_MAP).forEach(k=>{
+      const meta = CLIENT_MAP[k];
+      const label = meta.sample && (meta.sample._model_display || meta.sample.model) ? (meta.sample._model_display || meta.sample.model) : (meta.filename || k);
+      modelSel.appendChild(new Option(label, k));
+    });
+  }
 }
 
+/* Populate context select (isl/osl) for a canonical model */
 function populateContextSelect(modelName){
   ctxSel.innerHTML = '';
-  const arr = MODELS[modelName] || [];
-  // dedupe by isl/osl
   const seen = new Set();
-  arr.forEach(it=>{
-    const label = it.isl+'/'+it.osl;
-    if(!seen.has(it.key)){
-      seen.add(it.key);
-      ctxSel.appendChild(new Option(label, it.key));
+  for(const key of Object.keys(CLIENT_MAP)){
+    const meta = CLIENT_MAP[key];
+    const recs = meta.records;
+    let found = false;
+    if(recs && recs.length){
+      for(const r of recs){
+        const rcanon = r._model_canonical || (r.model || '');
+        if(rcanon === modelName){ found = true; break; }
+      }
+    } else if(meta.sample && (meta.sample._model_canonical || meta.sample.model)){
+      const s = meta.sample;
+      const canon = s._model_canonical || canonicalizeModelFromString(s.model || '');
+      if(canon === modelName) found = true;
+    } else if(meta.filename && String(meta.filename).toLowerCase().includes(String(modelName).toLowerCase().replace(/-/g,''))){
+      found = true;
     }
-  });
+    if(found && !seen.has(key)){
+      seen.add(key);
+      const sample = (meta.records && meta.records.length) ? meta.records[0] : (meta.sample || {});
+      const isl = sample.isl || '';
+      const osl = sample.osl || '';
+      const label = (isl || osl) ? `${isl}/${osl}` : (meta.filename || key);
+      ctxSel.appendChild(new Option(label, key));
+    }
+  }
+  // if no contexts found, provide at least entries from CLIENT_MAP (helpful when canonical matching fails)
+  if(!ctxSel.options.length){
+    Object.keys(CLIENT_MAP).forEach(k=>{
+      const meta = CLIENT_MAP[k];
+      const label = meta.sample && (meta.sample.isl || meta.sample.osl) ? `${meta.sample.isl||''}/${meta.sample.osl||''}` : (meta.filename || k);
+      ctxSel.appendChild(new Option(label, k));
+    });
+  }
 }
 
+/* Lazy-load records when needed; normalize and derive canonical/display client-side */
 function loadRecordsIfNeeded(mapKey){
-  // If records are null, fetch the file from /docs/data/<filename> and normalize.
   const meta = CLIENT_MAP[mapKey];
   if(!meta) return Promise.resolve(null);
-  if(meta.records !== null) return Promise.resolve(meta.records);
-  // attempt to fetch file path by filename
+  if(meta.records !== null && meta.records !== undefined) return Promise.resolve(meta.records);
   if(!meta.filename) return Promise.resolve(null);
   const url = 'data/' + meta.filename;
   return fetch(url).then(resp=>{
     if(!resp.ok) throw new Error('Failed to fetch '+url);
     return resp.json();
   }).then(j=>{
-    const recs = (Array.isArray(j)? j : (j.records || j.results || j.data || [j])).filter(r=>typeof r==='object');
-    // minimal normalization: ensure hw and precision exist
+    const recs = (Array.isArray(j)? j : (j.records || j.results || j.data || [j])).filter(r=> typeof r==='object');
     recs.forEach(r=>{
       if(!r.hw && r.hardware) r.hw = r.hardware;
       if(r.hw) r.hw = String(r.hw).toLowerCase();
       if(!r.precision) r.precision = 'fp8';
-      // coerce numeric-like
       ['tp','conc'].forEach(k=>{
         if(r[k]!==undefined && r[k]!==null && r[k]!==''){
           const n = Number(r[k]);
           if(!Number.isNaN(n)) r[k] = n;
         }
       });
+      // client-side canonicalization
+      const orig = r.model || '';
+      let s = String(orig).toLowerCase();
+      s = s.replace(/^(nvidia\/|amd\/|deepseek-ai\/|openai\/|\/mnt\/.*?\/models\/)/,'');
+      s = s.replace(/(\-?fp8|\-?fp4|\-?mxfp4|\-?mxpf4|\-?kv|\-?preview|\-v?\d+)$/i,'');
+      s = s.replace(/[\/_\s]+/g,'-').replace(/-+/g,'-').replace(/(^-+|-+$)/g,'');
+      let canon = 'unknown';
+      if(/llama.*3.*70b.*instruct/.test(s)) canon = 'Llama-3.3-70B-Instruct';
+      else if(/deepseek.*r1.*0528/.test(s)) canon = 'DeepSeek-R1-0528';
+      else if(s.indexOf('gpt-oss-120b')!==-1 || s.indexOf('gptoss-120b')!==-1) canon = 'gpt-oss-120b';
+      else canon = s || orig;
+      r._model_canonical = canon;
+      r._model_display = (canon === 'gpt-oss-120b') ? 'gpt-oss 120B' : canon;
+      r.model_original = orig;
     });
     meta.records = recs;
     return recs;
@@ -309,25 +466,24 @@ function loadRecordsIfNeeded(mapKey){
   });
 }
 
+/* Populate Y options for a context key based on available columns/samples */
 function populateYOptionsForKey(key){
   ySel.innerHTML = '';
   const meta = CLIENT_MAP[key];
   if(!meta) { ySel.appendChild(new Option('(no data)','')); return; }
-  // determine numeric columns by inspecting first few records
   let cols = meta.columns || [];
   if(meta.records && meta.records.length){
-    const rec = meta.records[0];
-    cols = Object.keys(rec);
+    cols = Object.keys(meta.records[0]);
+  } else if(meta.sample){
+    cols = Object.keys(meta.sample);
   }
   const numeric = [];
   cols.forEach(c=>{
-    // treat common numeric metrics explicitly
-    const sample = (meta.records && meta.records[0] && meta.records[0][c]) || null;
+    const sample = (meta.records && meta.records[0] && meta.records[0][c]) || (meta.sample && meta.sample[c]) || null;
     if(sample===null || sample===undefined) return;
     if(typeof sample === 'number') numeric.push(c);
     else if(!Number.isNaN(Number(sample))) numeric.push(c);
   });
-  // prefer helpful defaults
   const preferred = ['tput_per_gpu','output_tput_per_gpu','median_e2el','median_intvty','median_ttft','p99_e2el','p99_ttft'];
   preferred.forEach(p=>{
     if(numeric.includes(p)) ySel.appendChild(new Option(p,p));
@@ -336,25 +492,26 @@ function populateYOptionsForKey(key){
   if(!ySel.options.length) ySel.appendChild(new Option('(no numeric)',''));
 }
 
+/* Populate TP options for a context key */
 function populateTpOptionsForKey(key){
   tpSel.innerHTML = '';
   const meta = CLIENT_MAP[key];
   const s = new Set();
   if(meta.records && meta.records.length){
-    meta.records.forEach(r=>{ if(r.tp!==undefined && r.tp!==null) s.add(String(r.tp)); });
-  } else {
-    // try columns only: assume presence of 'tp' but cannot enumerate values
+    meta.records.forEach(r=>{ if(r.tp!==undefined && r.tp!==null && r.tp!=='' ) s.add(String(r.tp)); });
+  } else if(meta.sample && meta.sample.tp!==undefined && meta.sample.tp!==null && meta.sample.tp!==''){
+    s.add(String(meta.sample.tp));
   }
   tpSel.appendChild(new Option('All','all'));
   Array.from(s).sort((a,b)=>Number(a)-Number(b)).forEach(v=> tpSel.appendChild(new Option(v,v)));
 }
 
+/* Build plotly traces from records with grouping and inline small labels */
 function buildTraces(records,xcol,ycol,connectLines,tpFilter,precFilter){
   if(!records || !records.length) return [];
   let recs = records.slice();
   if(precFilter && precFilter!=='all') recs = recs.filter(r=> (String(r.precision||'').toLowerCase())===precFilter);
   if(tpFilter && tpFilter!=='all') recs = recs.filter(r=> String(r.tp)===String(tpFilter));
-  // group by hw and tp
   const groups = {};
   recs.forEach(r=>{
     const hw = (r.hw||r.hardware||'unknown').toString().toLowerCase();
@@ -363,12 +520,11 @@ function buildTraces(records,xcol,ycol,connectLines,tpFilter,precFilter){
     groups[hw][tp] = groups[hw][tp]||[];
     groups[hw][tp].push(r);
   });
-
-  // continue JS: build traces and rendering
   const hwKeys = Object.keys(groups).sort();
   const traces = [];
   const colorPalette = ['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd','#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf'];
   let colorIdx = 0;
+  const textPositions = ['top center','bottom center','middle left','middle right'];
   hwKeys.forEach(hw=>{
     const tpKeys = Object.keys(groups[hw]).sort((a,b)=>{
       const na=Number(a), nb=Number(b);
@@ -376,36 +532,48 @@ function buildTraces(records,xcol,ycol,connectLines,tpFilter,precFilter){
       return a.localeCompare(b);
     });
     tpKeys.forEach(tp=>{
-      const rows = groups[hw][tp].filter(r=> r.conc!==undefined && r.conc!==null && r.conc!=='');
-      if(!rows.length) return;
-      rows.sort((a,b)=>{ const na=Number(a.conc), nb=Number(b.conc); if(!isNaN(na)&&!isNaN(nb)) return na-nb; return String(a.conc).localeCompare(String(b.conc));});
+      const rows = groups[hw][tp];
+      if(!rows || !rows.length) return;
+      rows.sort((a,b)=>{
+        const na=Number(a.conc), nb=Number(b.conc);
+        if(!isNaN(na) && !isNaN(nb)) return na-nb;
+        return String(a.conc||'').localeCompare(String(b.conc||''));
+      });
       const xs = rows.map(r=>{ const v=r[xcol]; const n=Number(v); return Number.isNaN(n)? v : n; });
       const ys = rows.map(r=>{ const v=r[ycol]; const n=Number(v); return Number.isNaN(n)? v : n; });
-      const texts = rows.map(r=>{
+      const hovertexts = rows.map(r=>{
         const gpu = (r.hw||r.hardware||'unknown');
         const nGPU = (r.tp===undefined||r.tp=='')?'N/A':String(r.tp)+' GPU';
-        const conc = (r.conc===undefined||r.conc===null||r.conc=='')?'N/A':String(r.conc)+' Users';
+        const conc = (r.conc===undefined||r.conc===null||r.conc=='')?'N/A':String(r.conc);
         const xv = (r[xcol]===undefined||r[xcol]===null)?'':r[xcol];
         const yv = (r[ycol]===undefined||r[ycol]===null)?'':r[ycol];
         return ['GPU: '+gpu,'TP: '+nGPU,'Concurrency: '+conc,'X: '+xv,'Y: '+yv].join('<br>');
       });
+      const smallLabels = rows.map(r=> (r.conc!==undefined && r.conc!==null && r.conc!=='') ? String(r.conc) : '');
+      const tpos = smallLabels.map((_,i)=> textPositions[i % textPositions.length]);
       const color = colorPalette[colorIdx % colorPalette.length];
       colorIdx++;
+      const displayName = (rows[0] && rows[0]._model_display) ? rows[0]._model_display : (rows[0] && rows[0].model) || hw;
       traces.push({
-        x: xs, y: ys,
-        mode: connectLines ? 'lines+markers' : 'markers',
-        name: hw + (tp!=='none' ? ' tp='+tp : ''),
+        x: xs,
+        y: ys,
+        mode: connectLines ? 'lines+markers+text' : 'markers+text',
+        name: displayName + (tp!=='none' ? ' tp='+tp : ''),
         legendgroup: hw,
         marker: {color: color, size:8},
         line: {shape:'linear', color: color},
-        text: texts,
-        hoverinfo: 'text+x+y'
+        text: smallLabels,
+        textposition: tpos,
+        textfont: {size:9, color: '#222'},
+        hoverinfo: 'text',
+        hovertext: hovertexts
       });
     });
   });
   return traces;
 }
 
+/* Render plot for a selected context key */
 function renderForKey(key){
   const meta = CLIENT_MAP[key];
   if(!meta){ $id('plot_div').innerHTML = '<p>No data</p>'; return; }
@@ -429,7 +597,7 @@ function renderForKey(key){
   });
 }
 
-// initialize UI
+/* Initialize UI and wire events */
 populateModelSelect();
 if(modelSel.options.length){
   modelSel.value = modelSel.options[0].value;
@@ -443,7 +611,6 @@ if(modelSel.options.length){
   }
 }
 
-// wire events
 modelSel.addEventListener('change', ()=>{
   populateContextSelect(modelSel.value);
   if(ctxSel.options.length){
@@ -469,7 +636,7 @@ ctxSel.addEventListener('change', ()=>{
   yscaleSel.addEventListener(ev, ()=> renderForKey(ctxSel.value));
 });
 
-// export CSV of currently visible traces (simple implementation)
+/* Export CSV of visible traces */
 exportCsv.addEventListener('click', ()=>{
   const gd = document.getElementById('plot_div');
   const data = gd.data || [];
@@ -490,17 +657,17 @@ exportCsv.addEventListener('click', ()=>{
   URL.revokeObjectURL(url);
 });
 
-// export PNG via Plotly
+/* Export PNG via Plotly */
 exportPng.addEventListener('click', ()=>{
   Plotly.toImage('plot_div',{format:'png',height:800,width:1200}).then(dataUrl=>{
     const a = document.createElement('a'); a.href = dataUrl; a.download = 'plot_snapshot.png'; a.click();
   });
 });
 
-// reset view
+/* Reset view */
 resetView.addEventListener('click', ()=> { Plotly.relayout('plot_div', { 'xaxis.autorange': true, 'yaxis.autorange': true }); });
 
-// helper: populate initial x choices (already in markup) and expose record counts
+/* Initial counts */
 countTotal.textContent = 0;
 countShown.textContent = 0;
 
