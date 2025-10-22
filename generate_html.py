@@ -517,6 +517,7 @@ function buildTraces(records,xcol,ycol,connectLines,tpFilter,precFilter){
   if(precFilter && precFilter!=='all') recs = recs.filter(r=> (String(r.precision||'').toLowerCase())===precFilter);
   if(tpFilter && tpFilter!=='all') recs = recs.filter(r=> String(r.tp)===String(tpFilter));
   
+// --- REPLACE the existing grouping + trace-construction block in buildTraces with this ---
 const groups = {};
 recs.forEach(r=>{
   const hw = (r.hw||r.hardware||'unknown').toString().toLowerCase();
@@ -537,17 +538,17 @@ let colorIdx = 0;
 const textPositions = ['top center','bottom center','middle left','middle right'];
 
 hwKeys.forEach(hw=>{
-  const groupKeys = Object.keys(groups[hw]).sort((a,b)=>{
-    // sort by tp numerically when possible, otherwise lexicographically
-    const aTp = groups[hw][a].tp, bTp = groups[hw][b].tp;
+  const groupKeys = Object.keys(groups[hw] || {}).sort((a,b)=>{
+    const aTp = groups[hw][a] && groups[hw][a].tp, bTp = groups[hw][b] && groups[hw][b].tp;
     const na = Number(aTp), nb = Number(bTp);
     if(!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
     return String(a).localeCompare(String(b));
   });
   groupKeys.forEach(gk=>{
-    const group = groups[hw][gk];
-    const rows = group.rows;
-    if(!rows || !rows.length) return;
+    const group = (groups[hw] || {})[gk];
+    if(!group) return;
+    const rows = group.rows || [];
+    if(!rows.length) return;
     // sort by concurrency if present
     rows.sort((a,b)=>{
       const na = Number(a.conc), nb = Number(b.conc);
@@ -587,6 +588,7 @@ hwKeys.forEach(hw=>{
     });
   });
 });
+
 
 /* Render plot for a selected context key */
 function renderForKey(key){
