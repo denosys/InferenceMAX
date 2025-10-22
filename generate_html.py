@@ -338,26 +338,30 @@ function buildModels(){
   for(const key of Object.keys(CLIENT_MAP)){
     const meta = CLIENT_MAP[key];
     const recs = meta.records;
+    // helper per aggiungere un canonical entry
+    const addEntry = (canon, display) => {
+      if(!canon) canon = canonicalizeModelFromString(display || 'unknown');
+      const c = String(canon);
+      if(!models[c]) models[c] = {display: display || (c.replace(/-/g,' ')), contexts: new Set()};
+      models[c].contexts.add(String(key));
+    };
     if(recs && recs.length){
       recs.forEach(r=>{
-        const canon = r._model_canonical || (r.model || 'unknown');
+        const canon = r._model_canonical || canonicalizeModelFromString(r.model || '');
         const display = r._model_display || (r.model || canon);
-        if(!models[canon]) models[canon] = {display: display, contexts: new Set()};
-        models[canon].contexts.add(String(key));
+        addEntry(canon, display);
       });
     } else if(meta.sample && (meta.sample._model_canonical || meta.sample.model)){
       const s = meta.sample;
       const canon = s._model_canonical || canonicalizeModelFromString(s.model || '');
       const display = s._model_display || (s.model || canon);
-      if(!models[canon]) models[canon] = {display: display, contexts: new Set()};
-      models[canon].contexts.add(String(key));
+      addEntry(canon, display);
     } else {
-      // fallback: infer from filename or key so UI still has entries when everything is lazy
+      // fallback: infer from filename or key, but canonicalize before adding
       const fallbackRaw = meta.filename ? meta.filename.replace(/[-_.]+/g,' ') : (key || 'unknown');
       const canon = canonicalizeModelFromString(fallbackRaw);
-      const display = canon;
-      if(!models[canon]) models[canon] = {display: display, contexts: new Set()};
-      models[canon].contexts.add(String(key));
+      const display = display = canonicalizeModelFromString(canon) === canon ? canon.replace(/-/g,' ') : canon;
+      addEntry(canon, display);
     }
   }
   return models;
