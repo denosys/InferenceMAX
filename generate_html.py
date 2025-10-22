@@ -308,7 +308,7 @@ body{font-family:system-ui,Arial,sans-serif;margin:12px;background:#fff;color:#1
     plot_div = "<div id='plot_div'></div>"
 
     # embed client_map
-    body_js = f"<script>const CLIENT_MAP = {json.dumps(client_map)};</script>"
+    body_js = f\"<script>const CLIENT_MAP = {json.dumps(client_map, ensure_ascii=False)};</script>\"
 
     # main JS
     main_js = """
@@ -681,23 +681,23 @@ def write_diagnostics(files: List[Path], df: pd.DataFrame):
     try:
         with DIAG_FILE.open("w", encoding="utf-8") as d:
             d.write("Diagnostics generated on 2025-10-21\n")
-            d.write(f"data_dir: {DATA_DIR}\\n\\n")
+            d.write(f"data_dir: {DATA_DIR}\n\n")
             for p in files:
                 j = load_json_safe(p)
                 recs = normalize_records_from_json(j)
-                d.write(f"file: {p.name} - records: {len(recs)}\\n")
+                d.write(f"file: {p.name} - records: {len(recs)}\n")
                 # list common issues: missing hw/precision/tp/conc
                 missing = []
                 for k in ('hw','precision','tp','conc'):
                     if any((k not in r or r[k] in (None,'') ) for r in recs):
                         missing.append(k)
                 if missing:
-                    d.write(f"  missing_keys_in_some_records: {missing}\\n")
+                    d.write(f"  missing_keys_in_some_records: {missing}\n")
             d.write("\\nDataFrame sample:\\n")
             if df is None or df.empty:
                 d.write("  (no records)\\n")
             else:
-                d.write(df.head(3).to_json(orient='records', indent=2))
+                d.write(json.dumps(json.loads(df.head(3).to_json(orient='records')), indent=2, ensure_ascii=False))
         print(f"Wrote diagnostics: {DIAG_FILE}")
     except Exception as e:
         print("Warning: could not write diagnostics:", e)
