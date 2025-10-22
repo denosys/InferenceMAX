@@ -370,57 +370,14 @@ function buildModels(){
 /* Populate model select from models map; fallback to CLIENT_MAP keys if empty */
 function populateModelSelect(){
   modelSel.innerHTML = '';
-// --- build seen map (canonKey -> {canon, display, contexts:Set}) ---
-  const seen = new Map();
-
-  function canonKey(s){
-    return String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,'');
-  }
-
-  for(const key of Object.keys(CLIENT_MAP)){
-    const meta = CLIENT_MAP[key];
-    // gather one representative candidate objects from records/sample/filename
-    const reps = [];
-    if(meta.records && meta.records.length){
-      // include up to 3 records to surface any present _model_display/_model_canonical
-      reps.push(...meta.records.slice(0,3));
-    } else if(meta.sample){
-      reps.push(meta.sample);
-    } else {
-      reps.push({ model: meta.filename ? meta.filename.replace(/[-_.]+/g,' ') : key, _is_fallback: true });
-    }
-
-    // for each representative, determine canonical and display and record the context
-    for(const c of reps){
-      const rawModel = (c && (c._model_canonical || c.model || c.model_original)) || '';
-      const canon = rawModel ? canonicalizeModelFromString(rawModel) : '';
-      const keyCanon = canonKey(canon || rawModel);
-      // prefer explicit _model_display when present; otherwise derive from canon
-      const display = (c && c._model_display) ? c._model_display
-                      : (rawModel ? (c && (c.model || c.model_original) || rawModel) : displayNameForCanonical(canon));
-      // If this is a filename fallback and we've already seen this canonical, skip adding the fallback label
-      if(c && c._is_fallback && seen.has(keyCanon)) continue;
-
-      if(!seen.has(keyCanon)){
-        seen.set(keyCanon, {canon: canon || rawModel, display: display, contexts: new Set()});
-      } else {
-        // If we already have an entry, prefer a more descriptive display if available (_model_display wins)
-        const existing = seen.get(keyCanon);
-        if((c && c._model_display) && (!existing.display || existing.display.toLowerCase() !== (c._model_display||'').toLowerCase())){
-          existing.display = c._model_display;
-        }
-      }
-      seen.get(keyCanon).contexts.add(String(key));
-    }
-  }
-
-  const entries = Array.from(seen.values()).sort((a,b)=> String(a.display).localeCompare(String(b.display)));
+  const models = buildModels();
+  const entries = Object.keys(models).map(k=>({canon:k, display: models[k].display, contexts: models[k].contexts}));
+  entries.sort((a,b)=> String(a.display).localeCompare(String(b.display)));
   entries.forEach(e=>{
     modelSel.appendChild(new Option(e.display, e.canon));
   });
-
-  // fallback: if still empty, keep existing simple behavior
   if(!modelSel.options.length){
+    // fallback: show filenames/keys
     Object.keys(CLIENT_MAP).forEach(k=>{
       const meta = CLIENT_MAP[k];
       const label = meta.sample && (meta.sample._model_display || meta.sample.model) ? (meta.sample._model_display || meta.sample.model) : (meta.filename || k);
@@ -428,7 +385,6 @@ function populateModelSelect(){
     });
   }
 }
-
 
 /* Populate context select (isl/osl) for a canonical model */
 function populateContextSelect(modelName){
