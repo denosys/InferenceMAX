@@ -182,7 +182,8 @@ jobs:
                 echo "  Extracting to $tmpd"
                 unzip -q "$out" -d "$tmpd"
                 echo "  After extract, listing extracted files:"
-                find "$tmpd" -type f -print -exec ls -l {} \; || true
+                while IFS= read -r -d '' f; do
+                ls -l -- "f"∣∣truedone<<(find"tmpd" -type f -print0) || true
 
                 # Save extracted files with run-artid prefix to avoid overwriting
                 find "$tmpd" -type f $ -name "agg_*.json" -o -name "*__agg_*.json" -o -name "*.json" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" $ -print0 \
