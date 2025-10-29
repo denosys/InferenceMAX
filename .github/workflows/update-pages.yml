@@ -43,6 +43,7 @@ jobs:
             const url = process.argv[2];
             const out = process.argv[3] || '/tmp/im_public.html';
             if (!url) { console.error('Missing url'); process.exit(2); }
+            console.log('Rendering URL:', url);
             const browser = await puppeteer.launch({
               args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage'],
               headless: true
@@ -71,10 +72,12 @@ jobs:
           mkdir -p "$(dirname "$out")" /tmp/im_runs
           tmp_out="${out}.abs"
           : > "$tmp_out"
+          echo "Parsing run links from $infile"
           grep -Eo 'https?://github.com/[^/]+/[^/]+/actions/runs/[0-9]+' "$infile" >> "$tmp_out" || true
           grep -Eo '/[^/]+/[^/]+/actions/runs/[0-9]+' "$infile" | sed 's|^|https://github.com|' >> "$tmp_out" || true
           sort -u "$tmp_out" > "$out" || true
-          echo "Parsed run list written to $out"
+          echo "Parsed run list written to $out (size $(stat -c%s "$out" || echo 0) bytes)"
+          wc -l "$out" || true
           SH
           cat > .github/scripts/download_artifacts.sh <<'SH'
           #!/usr/bin/env bash
@@ -129,6 +132,12 @@ jobs:
             done
           }
 
+          echo "Reading runs file: $runs_file"
+          if [ ! -f "$runs_file" ]; then
+            echo "Runs file not found: $runs_file"
+            exit 1
+          fi
+
           # iterate runs and download/extract allowed artifacts
           while IFS= read -r run_url || [ -n "$run_url" ]; do
             [ -z "$run_url" ] && continue
@@ -140,11 +149,15 @@ jobs:
             rm -f "$tmp_art"
             fetch_all_artifacts_for_run "$owner" "$repo" "$run_id" "$tmp_art"
             if [ ! -s "$tmp_art" ]; then
-              echo " No artifacts for run $run_id"
+              echo " No artifacts for run $run_id (artifact list empty)"
               continue
             fi
+            echo " Artifacts metadata file: $tmp_art (size $(stat -c%s "$tmp_art"))"
+            wc -l "$tmp_art" || true
+
             # iterate items (each line is a JSON artifact)
-            while IFS= read -r art; do
+            while IFS= read -r art || [ -n "$art" ]; do
+              [ -z "$art" ] && continue
               art_id=$(echo "$art" | jq -r '.id')
               art_name=$(echo "$art" | jq -r '.name')
               norm_name="$art_name"
@@ -156,27 +169,33 @@ jobs:
               archive_url=$(echo "$art" | jq -r '.archive_download_url')
               safe_name="${run_id}-${art_id}-${art_name}"
               out="${artifacts_dir}/${safe_name}.zip"
-              echo " Downloading artifact $art_name from run $run_id"
+              echo " Downloading artifact $art_name from run $run_id -> $out"
               http_code=$(curl -sSL -w "%{http_code}" -H "Accept: application/vnd.github+json" -H "$AUTH_HDR" -o "$out" "$archive_url" || echo "000")
-              if [ "$http_code" != "200" ] && [ "$http_code" != "302" ] && [ "$http_code" != "307" ]; then
-                echo "  Warning: failed to download artifact $art_id (http $http_code)"
-                rm -f "$out" || true
-                continue
-              fi
+              echo "  Download returned HTTP code: $http_code"
+              echo "  Downloaded to $out (size: $(stat -c%s "$out" || echo 0) bytes)"
+              echo "  Listing zip contents:"
+              unzip -l "$out" || echo "  unzip -l failed for $out"
+
               if [ -s "$out" ] && unzip -t "$out" >/dev/null 2>&1; then
+                echo "  Zip test OK for $out"
                 tmpd=$(mktemp -d)
+                echo "  Extracting to $tmpd"
                 unzip -q "$out" -d "$tmpd"
-                # Save extracted files with run-artid prefix to avoid overwriting files
-                # (keep all extracted copies; post-process will pick the best and copy final basename)
-                find "$tmpd" -type f -name "agg_*.json" -o -name "*.json" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" -print0 \
+                echo "  After extract, listing extracted files:"
+                find "$tmpd" -type f -print -exec ls -l {} \; || true
+
+                # Save extracted files with run-artid prefix to avoid overwriting
+                find "$tmpd" -type f $ -name "agg_*.json" -o -name "*__agg_*.json" -o -name "*.json" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" $ -print0 \
                   | while IFS= read -r -d '' f; do
+                      echo "   Found extracted file: $f"
                       dest_base=$(basename "$f" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
-                      # create prefixed filename using the run id and artifact id we have in scope
                       prefixed="${run_id}-${art_id}-${dest_base}"
                       cp -f "$f" "${docs_data}/${prefixed}"
                       echo "   -> extracted ${prefixed}"
                   done
                 rm -rf "$tmpd"
+                # copy zip for offline inspection
+                cp -f "$out" "/tmp/inspected_$(basename "$out")" || true
               else
                 echo "  Warning: artifact $out not a valid zip or empty"
               fi
@@ -184,6 +203,7 @@ jobs:
           done < "$runs_file"
 
           # --- global post-process (run once after all runs processed) ---
+          echo "Starting global post-process"
           docs_data="${docs_data%/}"
           older_dir="${docs_data}/older"
           mkdir -p "$older_dir"
@@ -202,20 +222,19 @@ jobs:
           declare -A best_artid
           non_prefixed_files=()
 
-          # build a stable list of files (only files in docs_data root)
+          echo "Building stable list of files in $docs_data"
           mapfile -t allfiles < <(find "$docs_data" -maxdepth 1 -type f -printf '%P\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' | sort)
+          echo "Found ${#allfiles[@]} files in $docs_data (root)"
 
           for bn in "${allfiles[@]}"; do
             f="${docs_data}/${bn}"
             if parsed=$(parse_prefixed "$bn" 2>/dev/null); then
-              IFS=$'\t' read -r run artid namepart <<< "$parsed"+              
-              # Ensure run/artid are purely numeric (strip non-digits) but DO NOT change filenames
+              IFS=$'\t' read -r run artid namepart <<< "$parsed"
               run=$(printf '%s' "$run" | tr -cd '0-9'); artid=$(printf '%s' "$artid" | tr -cd '0-9')
               [ -z "$run" ] && run=0; [ -z "$artid" ] && artid=0
               subtype=$(printf '%s' "$namepart" | sed -E 's/__agg_.*$//' | sed -E 's/\.[^.]+$//')
               prev_run=${best_run[$subtype]:--1}
               prev_art=${best_artid[$subtype]:-0}
-              # Debug log to diagnose selection
               echo "DBG: bn='${bn}' -> run=${run} artid=${artid} subtype='${subtype}' prev_run=${prev_run} prev_art=${prev_art}"
               if (( run > prev_run )) || { (( run == prev_run )) && (( artid > prev_art )); }; then
                 best_run[$subtype]="$run"
@@ -223,25 +242,22 @@ jobs:
                 best_for_subtype[$subtype]="$f"
               fi
             else
-              # avoid adding empty names
               if [[ -n "$f" ]]; then
                 non_prefixed_files+=("$f")
               fi
             fi
           done
 
-          # move prefixed files not selected; keep the selected winner and move others to older
+          echo "Moving older prefixed files to $older_dir and keeping winners"
           for bn in "${allfiles[@]}"; do
             f="${docs_data}/${bn}"
             if parse_prefixed "$bn" >/dev/null 2>&1; then
               keep_this=0
               for s in "${!best_for_subtype[@]}"; do
-                # confronto robusto: prima per basename (nome file)
                 if [ "$(basename "${best_for_subtype[$s]}")" = "$bn" ]; then
                   keep_this=1
                   break
                 fi
-                # fallback: confronta path risolti (readlink -f) nel caso di symlink/percorsi diversi
                 if [ "$(readlink -f "${best_for_subtype[$s]}" 2>/dev/null || true)" = "$(readlink -f "$f" 2>/dev/null || true)" ]; then
                   keep_this=1
                   break
@@ -256,7 +272,7 @@ jobs:
             fi
           done
 
-          # delete non-prefixed files (ignore empty entries)
+          echo "Deleting non-prefixed files in root of $docs_data"
           for f in "${non_prefixed_files[@]:-}"; do
             [ -n "$f" ] || continue
             bn=$(basename "$f")
@@ -264,11 +280,10 @@ jobs:
             rm -f "$f" || echo " Failed to delete $f"
           done
 
-          # copy winners to canonical basenames (remove run-artid prefix)
+          echo "Copying winners to canonical basenames"
           for s in "${!best_for_subtype[@]}"; do
             winner="${best_for_subtype[$s]}"
             win_bn=$(basename "$winner")
-            # strip leading run-artid- prefix (two numeric fields and a dash)
             canonical_bn="$(printf '%s' "$win_bn" | sed -E 's/^[0-9]+-[0-9]+-//')"
             if [ -n "$canonical_bn" ]; then
               cp -f "${docs_data}/${win_bn}" "${docs_data}/${canonical_bn}"
@@ -280,6 +295,13 @@ jobs:
           for s in "${!best_for_subtype[@]}"; do
             echo "  - $(basename "${best_for_subtype[$s]}")"
           done
+
+          echo "Artifacts dir listing:"
+          ls -la "${artifacts_dir}" || true
+          echo "Docs data root listing:"
+          ls -la "${docs_data}" || true
+          echo "Docs data recursive listing (maxdepth 2):"
+          find "${docs_data}" -maxdepth 2 -type f -printf '%P\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sort || true
           SH
           chmod +x .github/scripts/*.sh
 
