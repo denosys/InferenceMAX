@@ -166,11 +166,15 @@ jobs:
               if [ -s "$out" ] && unzip -t "$out" >/dev/null 2>&1; then
                 tmpd=$(mktemp -d)
                 unzip -q "$out" -d "$tmpd"
+                # Save extracted files with run-artid prefix to avoid overwriting files
+                # (keep all extracted copies; post-process will pick the best and copy final basename)
                 find "$tmpd" -type f -name "agg_*.json" -o -name "*.json" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" -print0 \
                   | while IFS= read -r -d '' f; do
-                      dest=$(basename "$f" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
-                      cp -f "$f" "${docs_data}/${dest}"
-                      echo "   -> extracted ${dest}"
+                      dest_base=$(basename "$f" | sed -E 's/[^A-Za-z0-9._-]+/_/g')
+                      # create prefixed filename using the run id and artifact id we have in scope
+                      prefixed="${run_id}-${art_id}-${dest_base}"
+                      cp -f "$f" "${docs_data}/${prefixed}"
+                      echo "   -> extracted ${prefixed}"
                   done
                 rm -rf "$tmpd"
               else
@@ -198,13 +202,13 @@ jobs:
           declare -A best_artid
           non_prefixed_files=()
 
-          # build a stable list of files
-          mapfile -t allfiles < <(find "$docs_data" -maxdepth 1 -type f -printf '%P\n' | sort)
+          # build a stable list of files (only files in docs_data root)
+          mapfile -t allfiles < <(find "$docs_data" -maxdepth 1 -type f -printf '%P\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' | sort
 
           for bn in "${allfiles[@]}"; do
             f="${docs_data}/${bn}"
             if parsed=$(parse_prefixed "$bn" 2>/dev/null); then
-              IFS=$'\t' read -r run artid namepart <<< "$parsed"
+              IFS=$'\t' read -r run artid namepart <<< "$parsed"+              
               # Ensure run/artid are purely numeric (strip non-digits) but DO NOT change filenames
               run=$(printf '%s' "$run" | tr -cd '0-9'); artid=$(printf '%s' "$artid" | tr -cd '0-9')
               [ -z "$run" ] && run=0; [ -z "$artid" ] && artid=0
@@ -226,19 +230,18 @@ jobs:
             fi
           done
 
-          # move prefixed files not selected
+          # move prefixed files not selected; keep the selected winner and move others to older
           for bn in "${allfiles[@]}"; do
             f="${docs_data}/${bn}"
             if parse_prefixed "$bn" >/dev/null 2>&1; then
               keep_this=0
               for s in "${!best_for_subtype[@]}"; do
-                # confronto robusto per evitare mismatch dovuti a path diversi o symlink:
-                # 1) confronta i basenames (nome file)
+                # confronto robusto: prima per basename (nome file)
                 if [ "$(basename "${best_for_subtype[$s]}")" = "$bn" ]; then
                   keep_this=1
                   break
                 fi
-                # 2) fallback: confronta path risolti (readlink -f) se disponibile
+                # fallback: confronta path risolti (readlink -f) nel caso di symlink/percorsi diversi
                 if [ "$(readlink -f "${best_for_subtype[$s]}" 2>/dev/null || true)" = "$(readlink -f "$f" 2>/dev/null || true)" ]; then
                   keep_this=1
                   break
@@ -253,11 +256,24 @@ jobs:
             fi
           done
 
-          # delete non-prefixed files
+          # delete non-prefixed files (ignore empty entries)
           for f in "${non_prefixed_files[@]:-}"; do
+            [ -n "$f" ] || continue
             bn=$(basename "$f")
             echo "Deleting non-prefixed file: ${bn}"
             rm -f "$f" || echo " Failed to delete $f"
+          done
+
+          # copy winners to canonical basenames (remove run-artid prefix)
+          for s in "${!best_for_subtype[@]}"; do
+            winner="${best_for_subtype[$s]}"
+            win_bn=$(basename "$winner")
+            # strip leading run-artid- prefix (two numeric fields and a dash)
+            canonical_bn="$(printf '%s' "$win_bn" | sed -E 's/^[0-9]+-[0-9]+-//')"
+            if [ -n "$canonical_bn" ]; then
+              cp -f "${docs_data}/${win_bn}" "${docs_data}/${canonical_bn}"
+              echo "Finalized winner for ${s}: ${canonical_bn} (from ${win_bn})"
+            fi
           done
 
           echo "Global post-process complete. Kept files:"
