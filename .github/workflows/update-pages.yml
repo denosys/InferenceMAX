@@ -99,10 +99,12 @@ jobs:
           results_dsr1_1k8k.zip
           EOT
           is_allowed() {
-            local name="$1"
-            while IFS= read -r line; do
-              [ "$line" = "$name" ] && return 0
-            done <<< "$ALLOWED"
+            name="$1"
+            for line in $ALLOWED; do
+              if [ "$line" = "$name" ]; then
+                return 0
+              fi
+            done
             return 1
           }
           AUTH_HDR="Authorization: token ${secret_pat}"
