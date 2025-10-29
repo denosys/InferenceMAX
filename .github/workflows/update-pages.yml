@@ -203,7 +203,7 @@ jobs:
           non_prefixed_files=()
 
           # build a stable list of files (only files in docs_data root)
-          mapfile -t allfiles < <(find "$docs_data" -maxdepth 1 -type f -printf '%P\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' | sort
+          mapfile -t allfiles < <(find "$docs_data" -maxdepth 1 -type f -printf '%P\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' | sort)
 
           for bn in "${allfiles[@]}"; do
             f="${docs_data}/${bn}"
