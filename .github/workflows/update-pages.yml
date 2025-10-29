@@ -205,17 +205,24 @@ jobs:
             f="${docs_data}/${bn}"
             if parsed=$(parse_prefixed "$bn" 2>/dev/null); then
               IFS=$'\t' read -r run artid namepart <<< "$parsed"
+              # Ensure run/artid are purely numeric (strip non-digits) but DO NOT change filenames
+              run=$(printf '%s' "$run" | tr -cd '0-9'); artid=$(printf '%s' "$artid" | tr -cd '0-9')
+              [ -z "$run" ] && run=0; [ -z "$artid" ] && artid=0
               subtype=$(printf '%s' "$namepart" | sed -E 's/__agg_.*$//' | sed -E 's/\.[^.]+$//')
-              run=${run:-0}; artid=${artid:-0}
               prev_run=${best_run[$subtype]:--1}
               prev_art=${best_artid[$subtype]:-0}
+              # Debug log to diagnose selection
+              echo "DBG: bn='${bn}' -> run=${run} artid=${artid} subtype='${subtype}' prev_run=${prev_run} prev_art=${prev_art}"
               if (( run > prev_run )) || { (( run == prev_run )) && (( artid > prev_art )); }; then
                 best_run[$subtype]="$run"
                 best_artid[$subtype]="$artid"
                 best_for_subtype[$subtype]="$f"
               fi
             else
-              non_prefixed_files+=("$f")
+              # avoid adding empty names
+              if [[ -n "$f" ]]; then
+                non_prefixed_files+=("$f")
+              fi
             fi
           done
 
