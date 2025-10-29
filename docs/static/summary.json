@@ -8,7 +8,16 @@
     "18577146883-4302084725-results_dsr1_8k1k__agg_dsr1_8k1k.json",
     "18577199847-4302622068-results_gptoss_1k8k__agg_gptoss_1k8k.json",
     "18577199847-4302622074-results_dsr1_1k8k__agg_dsr1_1k8k.json",
-    "18577199847-4302624689-results_70b_1k8k__agg_70b_1k8k.json"
+    "18577199847-4302624689-results_70b_1k8k__agg_70b_1k8k.json",
+    "results_70b_1k1k__agg_70b_1k1k.json",
+    "results_70b_1k8k__agg_70b_1k8k.json",
+    "results_70b_8k1k__agg_70b_8k1k.json",
+    "results_dsr1_1k1k__agg_dsr1_1k1k.json",
+    "results_dsr1_1k8k__agg_dsr1_1k8k.json",
+    "results_dsr1_8k1k__agg_dsr1_8k1k.json",
+    "results_gptoss_1k1k__agg_gptoss_1k1k.json",
+    "results_gptoss_1k8k__agg_gptoss_1k8k.json",
+    "results_gptoss_8k1k__agg_gptoss_8k1k.json"
   ],
   "counts": {
     "18577107964-4295924251-results_70b_1k1k__agg_70b_1k1k.json": 227,
@@ -19,7 +28,16 @@
     "18577146883-4302084725-results_dsr1_8k1k__agg_dsr1_8k1k.json": 96,
     "18577199847-4302622068-results_gptoss_1k8k__agg_gptoss_1k8k.json": 130,
     "18577199847-4302622074-results_dsr1_1k8k__agg_dsr1_1k8k.json": 52,
-    "18577199847-4302624689-results_70b_1k8k__agg_70b_1k8k.json": 207
+    "18577199847-4302624689-results_70b_1k8k__agg_70b_1k8k.json": 207,
+    "results_70b_1k1k__agg_70b_1k1k.json": 227,
+    "results_70b_1k8k__agg_70b_1k8k.json": 207,
+    "results_70b_8k1k__agg_70b_8k1k.json": 227,
+    "results_dsr1_1k1k__agg_dsr1_1k1k.json": 106,
+    "results_dsr1_1k8k__agg_dsr1_1k8k.json": 52,
+    "results_dsr1_8k1k__agg_dsr1_8k1k.json": 96,
+    "results_gptoss_1k1k__agg_gptoss_1k1k.json": 150,
+    "results_gptoss_1k8k__agg_gptoss_1k8k.json": 130,
+    "results_gptoss_8k1k__agg_gptoss_8k1k.json": 150
   },
-  "total_files": 9
+  "total_files": 18
 }

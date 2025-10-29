@@ -10,6 +10,15 @@ file: 18577146883-4302084725-results_dsr1_8k1k__agg_dsr1_8k1k.json - records: 96
 file: 18577199847-4302622068-results_gptoss_1k8k__agg_gptoss_1k8k.json - records: 130
 file: 18577199847-4302622074-results_dsr1_1k8k__agg_dsr1_1k8k.json - records: 52
 file: 18577199847-4302624689-results_70b_1k8k__agg_70b_1k8k.json - records: 207
+file: results_70b_1k1k__agg_70b_1k1k.json - records: 227
+file: results_70b_1k8k__agg_70b_1k8k.json - records: 207
+file: results_70b_8k1k__agg_70b_8k1k.json - records: 227
+file: results_dsr1_1k1k__agg_dsr1_1k1k.json - records: 106
+file: results_dsr1_1k8k__agg_dsr1_1k8k.json - records: 52
+file: results_dsr1_8k1k__agg_dsr1_8k1k.json - records: 96
+file: results_gptoss_1k1k__agg_gptoss_1k1k.json - records: 150
+file: results_gptoss_1k8k__agg_gptoss_1k8k.json - records: 130
+file: results_gptoss_8k1k__agg_gptoss_8k1k.json - records: 150
 \nDataFrame sample:\n[
   {
     "hw": "b200",
