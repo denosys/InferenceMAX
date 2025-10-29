@@ -232,7 +232,17 @@ jobs:
             if parse_prefixed "$bn" >/dev/null 2>&1; then
               keep_this=0
               for s in "${!best_for_subtype[@]}"; do
-                [ "${best_for_subtype[$s]}" = "$f" ] && keep_this=1 && break
+                # confronto robusto per evitare mismatch dovuti a path diversi o symlink:
+                # 1) confronta i basenames (nome file)
+                if [ "$(basename "${best_for_subtype[$s]}")" = "$bn" ]; then
+                  keep_this=1
+                  break
+                fi
+                # 2) fallback: confronta path risolti (readlink -f) se disponibile
+                if [ "$(readlink -f "${best_for_subtype[$s]}" 2>/dev/null || true)" = "$(readlink -f "$f" 2>/dev/null || true)" ]; then
+                  keep_this=1
+                  break
+                fi
               done
               if [ "$keep_this" -eq 1 ]; then
                 echo "Keeping prefixed file: ${bn}"
